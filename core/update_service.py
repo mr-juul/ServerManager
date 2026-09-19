@@ -193,8 +193,13 @@ def apply_update_archive(archive: Path, app_root: Path, backup_root: Path) -> No
     extracted_items = list(extract_root.iterdir())
     source_root = extracted_items[0] if len(extracted_items) == 1 and extracted_items[0].is_dir() else extract_root
 
+    # The updater process cannot overwrite its own executable while running on Windows.
+    skip_while_running = {"servermanagerupdater.exe"}
+
     for item in source_root.iterdir():
         destination = app_root / item.name
+        if item.name.lower() in skip_while_running and destination.exists():
+            continue
         if destination.is_dir() and item.is_dir():
             shutil.rmtree(destination)
             shutil.copytree(item, destination)

@@ -37,3 +37,21 @@ def test_apply_update_archive_handles_backup_root_inside_app_root(tmp_path):
     backup_dir = app_root / "updates" / "backups" / "app-backup-ServerManager-1.0.9"
     assert backup_dir.is_dir()
     assert (backup_dir / "ServerManager.exe").read_text(encoding="utf-8") == "old"
+
+
+def test_apply_update_archive_skips_running_updater_executable(tmp_path):
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    (app_root / "ServerManager.exe").write_text("old", encoding="utf-8")
+    (app_root / "ServerManagerUpdater.exe").write_text("locked", encoding="utf-8")
+    backup_root = tmp_path / "backups"
+
+    archive = tmp_path / "ServerManager-1.0.10.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("ServerManager.exe", "new")
+        bundle.writestr("ServerManagerUpdater.exe", "new-updater")
+
+    apply_update_archive(archive, app_root, backup_root)
+
+    assert (app_root / "ServerManager.exe").read_text(encoding="utf-8") == "new"
+    assert (app_root / "ServerManagerUpdater.exe").read_text(encoding="utf-8") == "locked"
