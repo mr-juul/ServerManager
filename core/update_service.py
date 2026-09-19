@@ -163,12 +163,28 @@ def launch_updater(app_root: Path, archive_path: Path, manager_pid: int) -> None
     raise UpdateError("Updater executable not found")
 
 
+def _ignore_backup_subtree(backup_root: Path):
+    backup_resolved = backup_root.resolve(strict=False)
+
+    def _ignore(current_dir: str, names: list[str]) -> set[str]:
+        ignored: set[str] = set()
+        current = Path(current_dir).resolve(strict=False)
+        for name in names:
+            candidate = (current / name).resolve(strict=False)
+            if candidate == backup_resolved or backup_resolved.is_relative_to(candidate):
+                ignored.add(name)
+        return ignored
+
+    return _ignore
+
+
 def apply_update_archive(archive: Path, app_root: Path, backup_root: Path) -> None:
     backup_root.mkdir(parents=True, exist_ok=True)
     backup_dir = backup_root / f"app-backup-{archive.stem}"
     if backup_dir.exists():
         shutil.rmtree(backup_dir)
-    shutil.copytree(app_root, backup_dir)
+    ignore = _ignore_backup_subtree(backup_root) if backup_root.resolve(strict=False).is_relative_to(app_root.resolve(strict=False)) else None
+    shutil.copytree(app_root, backup_dir, ignore=ignore)
 
     extract_root = Path(tempfile.mkdtemp(prefix="servermanager-update-"))
     with zipfile.ZipFile(archive) as zip_file:
