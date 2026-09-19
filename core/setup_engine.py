@@ -27,18 +27,18 @@ class SetupResult:
 
     def fix_message(self) -> str:
         if self.ready:
-            return "Everything is ready."
+            return "Spillet er klar."
         missing = [issue for issue in self.issues if issue.state != "ok"]
         if not missing:
-            return "Everything is ready."
+            return "Spillet er klar."
         first = missing[0]
         if first.label == "Steam":
-            return "Steam is required. Install Steam and open it to log in before continuing."
+            return "Steam mangler eller er ikke klar endnu."
         if first.label == "Java":
-            return "Java is not installed. Install Java and ensure it is available on PATH."
+            return "Java runtime mangler eller er ikke kompatibel."
         if first.label == "Dedicated server":
-            return f"The dedicated server for {self.definition.display_name} is not installed yet. Install it from Steam and retry."
-        return f"{first.label} needs attention before this game can be used."
+            return f"Serverfiler til {self.definition.display_name} mangler endnu."
+        return f"{first.label} kræver handling før spillet er klar."
 
 
 class GameSetupEngine:

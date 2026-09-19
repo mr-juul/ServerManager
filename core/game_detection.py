@@ -57,14 +57,14 @@ def _steam_libraries() -> list[Path]:
 
 
 def detect_game(definition: GameDefinition, configured_paths: list[Path] | None = None) -> GameStatus:
-    checks: list[CheckResult] = [CheckResult("Support", "ok" if definition.supported else "error", "Supported" if definition.supported else "Not supported")]
+    checks: list[CheckResult] = [CheckResult("Support", "ok" if definition.supported else "error", "Ready" if definition.supported else "Unavailable")]
     candidates = list(configured_paths or [])
     if definition.requires_java:
         java = shutil.which("java")
-        checks.append(CheckResult("Java", "ok" if java else "warning", java or "Not installed"))
+        checks.append(CheckResult("Java", "ok" if java else "warning", "Compatible runtime detected" if java else "No compatible runtime"))
     if definition.steam_app_id:
         steam = _steam_libraries()
-        checks.append(CheckResult("Steam", "ok" if steam else "warning", "Installed" if steam else "Not found"))
+        checks.append(CheckResult("Steam", "ok" if steam else "warning", "Available" if steam else "Not available"))
         for library in steam:
             candidates.extend([library / "steamapps" / "common", library / "steamapps" / "common" / definition.display_name])
     found = None
@@ -73,7 +73,7 @@ def detect_game(definition: GameDefinition, configured_paths: list[Path] | None 
         if not definition.server_search_names or any((candidate / name).exists() for name in definition.server_search_names):
             found = candidate; break
     if definition.server_search_names:
-        checks.append(CheckResult("Dedicated server", "ok" if found else "warning", "Server files found" if found else "Not found; select a folder manually"))
+        checks.append(CheckResult("Dedicated server", "ok" if found else "warning", "Installed" if found else "Needs setup"))
     state = "READY" if all(check.state == "ok" for check in checks if check.label != "Support") else "WARNING"
     if not definition.supported: state = "ERROR"
     return GameStatus(definition, state, checks, found)

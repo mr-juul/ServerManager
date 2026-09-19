@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import sys
 import threading
 import time
@@ -170,28 +171,28 @@ class GameSetupDialog(QDialog):
         title = QLabel(definition.display_name)
         title.setObjectName("serverTitle")
         layout.addWidget(title)
-        status = QLabel("Everything is ready." if self.result.ready else "Setup requires attention.")
+        status = QLabel("Klar" if self.result.ready else "Kræver opsætning")
         layout.addWidget(status)
-        message = QLabel(self.result.fix_message())
+        message = QLabel("Server Manager kan klargøre dette spil automatisk." if not self.result.ready else "Du kan oprette servere nu.")
         message.setWordWrap(True)
         layout.addWidget(message)
-        checks = QGroupBox("Readiness")
+        checks = QGroupBox("Status")
         check_layout = QVBoxLayout(checks)
         for issue in self.result.issues:
-            row = QLabel(f"{('✓' if issue.state == 'ok' else '⚠')} {issue.label}: {issue.detail}")
+            row = QLabel(f"{('✓' if issue.state == 'ok' else '⚠')} {issue.label}: {'Ready' if issue.state == 'ok' else 'Needs setup'}")
             row.setWordWrap(True)
             check_layout.addWidget(row)
         layout.addWidget(checks)
         buttons = QHBoxLayout()
         buttons.addStretch()
-        create_btn = QPushButton("Create server")
+        create_btn = QPushButton("Opret server")
         create_btn.clicked.connect(self._create_default_server)
         buttons.addWidget(create_btn)
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton("Luk")
         close_btn.clicked.connect(self.reject)
         buttons.addWidget(close_btn)
         if not self.result.ready:
-            fix_btn = QPushButton("Fix automatically")
+            fix_btn = QPushButton("Opsæt automatisk")
             fix_btn.clicked.connect(self._show_fix_hint)
             buttons.addWidget(fix_btn)
         layout.addLayout(buttons)
@@ -275,6 +276,8 @@ class SettingsDialog(QDialog):
         self.web_bind = QLineEdit(settings.web_control_bind_address)
         self.web_https_cert = QLineEdit(settings.web_control_https_cert)
         self.web_https_key = QLineEdit(settings.web_control_https_key)
+        self.web_advanced = QCheckBox("Vis avancerede web-indstillinger")
+        self.web_advanced.setChecked(False)
         cert_browse = QPushButton("Gennemse")
         cert_browse.clicked.connect(self._browse_https_cert)
         key_browse = QPushButton("Gennemse")
@@ -308,12 +311,21 @@ class SettingsDialog(QDialog):
 
         web_group = QGroupBox("Web Control")
         web_form = QFormLayout(web_group)
-        web_form.addRow("Enabled", self.web_enabled)
-        web_form.addRow("Port", self.web_port)
-        web_form.addRow("Bind address", self.web_bind)
-        web_form.addRow("HTTPS cert", cert_row)
-        web_form.addRow("HTTPS key", key_row)
+        web_form.addRow("Remote control", self.web_enabled)
         web_form.addRow("Password", password_row)
+        web_form.addRow("Netværk", QLabel("Automatisk"))
+        web_form.addRow(self.web_advanced)
+
+        self.web_advanced_group = QGroupBox("Avanceret")
+        advanced_form = QFormLayout(self.web_advanced_group)
+        advanced_form.addRow("Port", self.web_port)
+        advanced_form.addRow("Bind address", self.web_bind)
+        advanced_form.addRow("HTTPS cert", cert_row)
+        advanced_form.addRow("HTTPS key", key_row)
+        self.web_advanced_group.setVisible(False)
+        self.web_advanced.toggled.connect(self.web_advanced_group.setVisible)
+
+        web_form.addRow(self.web_advanced_group)
         form.addRow(web_group)
 
         buttons = QHBoxLayout()
@@ -343,6 +355,9 @@ class SettingsDialog(QDialog):
             self.web_https_key.setText(path)
 
     def values(self):
+        bind_value = self.web_bind.text().strip() if self.web_advanced.isChecked() else "0.0.0.0"
+        cert_value = self.web_https_cert.text().strip() if self.web_advanced.isChecked() else self._settings.web_control_https_cert
+        key_value = self.web_https_key.text().strip() if self.web_advanced.isChecked() else self._settings.web_control_https_key
         return AppSettings(
             start_with_windows=self.start_windows.isChecked(),
             minimize_to_tray=self.minimize.isChecked(),
@@ -355,10 +370,10 @@ class SettingsDialog(QDialog):
             release_repository=self.repository.text().strip() or DEFAULT_RELEASE_REPO,
             web_control_enabled=self.web_enabled.isChecked(),
             web_control_port=self.web_port.value(),
-            web_control_bind_address=self.web_bind.text().strip() or "0.0.0.0",
+            web_control_bind_address=bind_value or "0.0.0.0",
             web_control_password_hash=self._password_hash,
-            web_control_https_cert=self.web_https_cert.text().strip(),
-            web_control_https_key=self.web_https_key.text().strip(),
+            web_control_https_cert=cert_value,
+            web_control_https_key=key_value,
             watchdog_max_restarts=self._settings.watchdog_max_restarts,
             watchdog_window_minutes=self._settings.watchdog_window_minutes,
             watchdog_restart_delay_seconds=self._settings.watchdog_restart_delay_seconds,
@@ -576,6 +591,15 @@ class QuickCreateServerDialog(QDialog):
         self.new_world.setChecked(True)
         self.world_name = QLineEdit("")
         self.world_list = QComboBox()
+
+        self.mc_version = QComboBox()
+        self.mc_version.addItem("Latest stable", "latest")
+        self.mc_server_type = QComboBox()
+        self.mc_server_type.addItem("Vanilla", "vanilla")
+        self.mc_server_type.addItem("Fabric", "fabric")
+        self.mc_server_type.addItem("Forge", "forge")
+        self.mc_server_type.addItem("NeoForge", "neoforge")
+
         self.start_now = QCheckBox("Start serveren nu")
         self.start_now.setChecked(True)
         self.advanced = QCheckBox("Brug avancerede indstillinger")
@@ -595,6 +619,8 @@ class QuickCreateServerDialog(QDialog):
         layout.addRow("Verdensnavn", self.world_name)
         layout.addRow(self.existing_world)
         layout.addRow("Eksisterende verdener", self.world_list)
+        layout.addRow("Minecraft version", self.mc_version)
+        layout.addRow("Server type", self.mc_server_type)
         layout.addRow(self.start_now)
         layout.addRow(self.advanced)
 
@@ -613,12 +639,17 @@ class QuickCreateServerDialog(QDialog):
     def _refresh_world_controls(self):
         selected = game_definition(str(self.game.currentData() or "generic"))
         has_world = selected.has_world
+        minecraft = selected.id == "minecraft-java"
         self.new_world.setVisible(has_world)
         self.existing_world.setVisible(has_world)
         self.world_name.setVisible(has_world and self.new_world.isChecked())
         self.layout().labelForField(self.world_name).setVisible(has_world and self.new_world.isChecked())
         self.world_list.setVisible(has_world and self.existing_world.isChecked())
         self.layout().labelForField(self.world_list).setVisible(has_world and self.existing_world.isChecked())
+        self.mc_version.setVisible(minecraft)
+        self.layout().labelForField(self.mc_version).setVisible(minecraft)
+        self.mc_server_type.setVisible(minecraft)
+        self.layout().labelForField(self.mc_server_type).setVisible(minecraft)
         if has_world:
             worlds = discover_world_names(selected.id, self.app_root)
             self.world_list.clear()
@@ -674,6 +705,8 @@ class QuickCreateServerDialog(QDialog):
             "name": self.name.text().strip(),
             "password": self.password.text(),
             "world": world,
+            "minecraft_version": str(self.mc_version.currentData() or "latest"),
+            "minecraft_server_type": str(self.mc_server_type.currentData() or "vanilla"),
             "start_now": self.start_now.isChecked(),
             "advanced": self.advanced.isChecked() or self._advanced_immediate,
         }
@@ -772,7 +805,7 @@ class MainWindow(QMainWindow):
     def _build_mods_page(self):
         page = QWidget(); layout = QVBoxLayout(page); header = QHBoxLayout(); title = QLabel("MOD LIBRARY"); title.setObjectName("pageTitle"); header.addWidget(title); add = QPushButton("+ Add mod"); add.clicked.connect(self.import_mod_to_library); header.addWidget(add); layout.addLayout(header); self.mod_search = QLineEdit(); self.mod_search.setPlaceholderText("Search mods..."); self.mod_search.textChanged.connect(self._render_mod_library); layout.addWidget(self.mod_search); scroll = QScrollArea(); scroll.setWidgetResizable(True); self.mod_container = QWidget(); self.mod_layout = QVBoxLayout(self.mod_container); scroll.setWidget(self.mod_container); layout.addWidget(scroll); self._render_mod_library(); return page
     def _build_settings_page(self):
-        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("INDSTILLINGER"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); self.version_label = QLabel(f"Nuværende version: {APP_VERSION}"); self.latest_label = QLabel("Seneste version: ukendt"); layout.addWidget(self.version_label); layout.addWidget(self.latest_label); updates = QPushButton("TJEK FOR OPDATERINGER"); updates.clicked.connect(lambda: self.check_updates(background=False)); layout.addWidget(updates); web_group = QGroupBox("WEB CONTROL"); web_layout = QFormLayout(web_group); self.web_status_label = QLabel("Ikke aktiv"); self.web_url_label = QLabel("-"); self.web_error_label = QLabel("-"); self.web_https_label = QLabel("Ikke konfigureret"); self.web_exposure_label = QLabel("-"); open_web = QPushButton("ÅBN WEB CONTROL"); open_web.clicked.connect(self.open_web_control); restart_web = QPushButton("GENSTART WEB CONTROL"); restart_web.clicked.connect(self.restart_web_control); diagnostics_web = QPushButton("WEB DIAGNOSTIK"); diagnostics_web.clicked.connect(self.show_web_control_diagnostics); web_layout.addRow("Status", self.web_status_label); web_layout.addRow("Lokal adresse", self.web_url_label); web_layout.addRow("HTTPS", self.web_https_label); web_layout.addRow("Netværk", self.web_exposure_label); web_layout.addRow("Fejl", self.web_error_label); web_layout.addRow(open_web); web_layout.addRow(restart_web); web_layout.addRow(diagnostics_web); layout.addWidget(web_group); layout.addStretch(); return page
+        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("INDSTILLINGER"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); self.version_label = QLabel(f"Nuværende version: {APP_VERSION}"); self.latest_label = QLabel("Seneste version: ukendt"); layout.addWidget(self.version_label); layout.addWidget(self.latest_label); updates = QPushButton("TJEK FOR OPDATERINGER"); updates.clicked.connect(lambda: self.check_updates(background=False)); layout.addWidget(updates); web_group = QGroupBox("WEB CONTROL"); web_layout = QFormLayout(web_group); self.web_status_label = QLabel("Ikke aktiv"); self.web_url_label = QLabel("-"); self.web_error_label = QLabel("-"); self.web_https_label = QLabel("Ikke konfigureret"); self.web_exposure_label = QLabel("Automatisk"); self.web_password_label = QLabel("Ikke konfigureret"); open_web = QPushButton("ÅBN WEB CONTROL"); open_web.clicked.connect(self.open_web_control); enable_web = QPushButton("AKTIVER WEB CONTROL"); enable_web.clicked.connect(self.enable_web_control_simple); disable_web = QPushButton("DEAKTIVER WEB CONTROL"); disable_web.clicked.connect(self.disable_web_control_simple); change_web_password = QPushButton("SKIFT WEB-PASSWORD"); change_web_password.clicked.connect(self.change_web_control_password_simple); restart_web = QPushButton("GENSTART WEB CONTROL"); restart_web.clicked.connect(self.restart_web_control); diagnostics_web = QPushButton("WEB DIAGNOSTIK"); diagnostics_web.clicked.connect(self.show_web_control_diagnostics); web_layout.addRow("Status", self.web_status_label); web_layout.addRow("Web-adresse", self.web_url_label); web_layout.addRow("Password", self.web_password_label); web_layout.addRow("Sikkerhed", self.web_https_label); web_layout.addRow("Netværk", self.web_exposure_label); web_layout.addRow("Fejl", self.web_error_label); web_layout.addRow(open_web); web_layout.addRow(enable_web); web_layout.addRow(change_web_password); web_layout.addRow(disable_web); web_layout.addRow(restart_web); web_layout.addRow(diagnostics_web); layout.addWidget(web_group); layout.addStretch(); return page
 
     def _rebuild_servers(self):
         while self.server_layout.count():
@@ -964,8 +997,20 @@ class MainWindow(QMainWindow):
         status = self.game_statuses.get(game_id)
         installation = status.installation_path if status else None
         if not installation:
-            QMessageBox.information(self, "Opsætning kræves", "Dette spil skal sættes op før du kan oprette en server. Gå til SPIL og vælg OPSÆT AUTOMATISK.")
-            return
+            engine = GameSetupEngine(game_definition(game_id))
+            engine.run_fix()
+            self._rescan_games()
+            status = self.game_statuses.get(game_id)
+            installation = status.installation_path if status else None
+            if not installation:
+                QMessageBox.information(self, "Opsætning kræves", "Vi kunne ikke klargøre spillet automatisk endnu. Åbn SPIL og vælg OPSÆT AUTOMATISK for detaljer.")
+                return
+
+        extra_args = str(setup.get("additional_arguments", ""))
+        if game_id == "minecraft-java":
+            mc_type = str(payload.get("minecraft_server_type") or "vanilla")
+            mc_version = str(payload.get("minecraft_version") or "latest")
+            extra_args = (extra_args + f" --server-type {mc_type} --mc-version {mc_version}").strip()
 
         config = ServerConfig(
             id=server_id,
@@ -978,7 +1023,7 @@ class MainWindow(QMainWindow):
             port=int(setup.get("port", 2456)),
             public=bool(setup.get("public", True)),
             crossplay=bool(setup.get("crossplay", True)),
-            additional_arguments=str(setup.get("additional_arguments", "")),
+            additional_arguments=extra_args,
             world_directory=str(setup.get("world_directory", "")),
             executable_directory=str(installation),
             auto_start=False,
@@ -1028,6 +1073,13 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             previous_startup = self.settings.start_with_windows
             self.settings = dialog.values(); self._save_configuration(); self.system_timer.setInterval(self.settings.refresh_interval_seconds * 1000)
+            if self.settings.web_control_enabled and not self.settings.web_control_password_hash.strip():
+                password_dialog = WebPasswordDialog(self)
+                if password_dialog.exec() != QDialog.Accepted:
+                    self.settings.web_control_enabled = False
+                else:
+                    self.settings.web_control_password_hash = password_dialog.password_hash
+                self._save_configuration()
             if previous_startup != self.settings.start_with_windows:
                 try:
                     if self.settings.start_with_windows: enable_startup(self.install_root)
@@ -1038,7 +1090,32 @@ class MainWindow(QMainWindow):
             self._refresh_startup_state()
             self._show_startup_state()
 
+    def change_web_control_password_simple(self):
+        dialog = WebPasswordDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.settings.web_control_password_hash = dialog.password_hash
+        self._save_configuration()
+        self._apply_web_control_settings()
+
+    def enable_web_control_simple(self):
+        if not self.settings.web_control_password_hash.strip():
+            dialog = WebPasswordDialog(self)
+            if dialog.exec() != QDialog.Accepted:
+                return
+            self.settings.web_control_password_hash = dialog.password_hash
+        self.settings.web_control_enabled = True
+        self.settings.web_control_bind_address = "0.0.0.0"
+        self._save_configuration()
+        self._apply_web_control_settings()
+
+    def disable_web_control_simple(self):
+        self.settings.web_control_enabled = False
+        self._save_configuration()
+        self._apply_web_control_settings()
+
     def _apply_web_control_settings(self):
+        self._ensure_web_control_defaults()
         try:
             self.web_control.restart(self.settings)
         except Exception as exc:
@@ -1052,15 +1129,45 @@ class MainWindow(QMainWindow):
             )
         self._refresh_web_control_status()
 
+    def _ensure_web_control_defaults(self):
+        if not self.settings.web_control_enabled:
+            return
+        if not self.settings.web_control_bind_address.strip():
+            self.settings.web_control_bind_address = "0.0.0.0"
+        # Keep default LAN behavior and automatically move to next free port when needed.
+        target_port = int(self.settings.web_control_port or 8080)
+        if not self._is_tcp_port_available(self.settings.web_control_bind_address, target_port):
+            new_port = self._next_available_port(self.settings.web_control_bind_address, target_port)
+            self.settings.web_control_port = new_port
+            self._save_configuration()
+
+    def _is_tcp_port_available(self, host: str, port: int) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind((host, int(port)))
+            return True
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+    def _next_available_port(self, host: str, start: int) -> int:
+        for port in range(max(1, int(start)), 65536):
+            if self._is_tcp_port_available(host, port):
+                return port
+        return max(1, int(start))
+
     def _refresh_web_control_status(self):
         if not hasattr(self, "web_status_label"):
             return
         https_configured = bool(self.settings.web_control_https_cert.strip() and self.settings.web_control_https_key.strip())
         self.web_https_label.setText("Konfigureret" if https_configured else "Ikke konfigureret")
+        if hasattr(self, "web_password_label"):
+            self.web_password_label.setText("Konfigureret" if self.settings.web_control_password_hash.strip() else "Ikke konfigureret")
         if self.settings.web_control_bind_address == "0.0.0.0":
-            self.web_exposure_label.setText("Tilgængelig på lokalt netværk")
+            self.web_exposure_label.setText("Automatisk (lokalt netværk)")
         else:
-            self.web_exposure_label.setText("Kun lokal binding")
+            self.web_exposure_label.setText("Manuel binding")
         if not self.settings.web_control_enabled:
             self.web_status_label.setText("Deaktiveret")
             self.web_url_label.setText("-")
