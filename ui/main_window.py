@@ -325,7 +325,7 @@ class MainWindow(QMainWindow):
     def _build_games_page(self):
         page = QWidget(); layout = QVBoxLayout(page); header = QHBoxLayout(); title = QLabel("GAMES"); title.setObjectName("pageTitle"); header.addWidget(title); rescan = QPushButton("RESCAN ALL"); rescan.clicked.connect(self._rescan_games); header.addWidget(rescan); layout.addLayout(header); scroll = QScrollArea(); scroll.setWidgetResizable(True); self.game_container = QWidget(); self.game_layout = QVBoxLayout(self.game_container); scroll.setWidget(self.game_container); layout.addWidget(scroll); return page
     def _build_settings_page(self):
-        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("SETTINGS"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); updates = QPushButton("CHECK FOR UPDATES"); updates.clicked.connect(lambda: self.check_updates(background=False)); layout.addWidget(updates); layout.addStretch(); return page
+        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("SETTINGS"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); self.version_label = QLabel(f"Current version: {APP_VERSION}"); self.latest_label = QLabel("Latest version: unknown"); layout.addWidget(self.version_label); layout.addWidget(self.latest_label); updates = QPushButton("CHECK FOR UPDATES"); updates.clicked.connect(lambda: self.check_updates(background=False)); layout.addWidget(updates); layout.addStretch(); return page
 
     def _rebuild_servers(self):
         while self.server_layout.count():
@@ -414,6 +414,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Startup", f"Startup is {'enabled' if self._startup_enabled else 'disabled'}.")
 
     def _notify_update(self, release):
+        self.latest_label.setText(f"Latest version: {release.version}")
         message = f"Server Manager {release.version} is available.\n\nCurrent version: {APP_VERSION}\nLatest version: {release.version}\n\nInstall now?"
         answer = QMessageBox.question(self, "Update available", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer == QMessageBox.Yes:
@@ -449,9 +450,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Update failed", str(exc))
 
     def _notify_no_update(self):
+        self.latest_label.setText(f"Latest version: {APP_VERSION}")
         QMessageBox.information(self, "Updates", "No updates available.")
 
     def _notify_update_error(self, message: str):
+        self.latest_label.setText("Latest version: unavailable")
         QMessageBox.warning(self, "Updates", f"Update check failed: {message}")
     def _confirm_shutdown(self) -> bool:
         answer = QMessageBox.question(

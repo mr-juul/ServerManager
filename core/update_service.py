@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,11 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import certifi
+except Exception:  # pragma: no cover - fallback when certifi is unavailable
+    certifi = None
 
 
 @dataclass
@@ -22,6 +28,20 @@ class ReleaseInfo:
 
 class UpdateError(RuntimeError):
     """Raised for update-related failures."""
+
+
+def _ssl_context() -> ssl.SSLContext:
+    if certifi is not None:
+        return ssl.create_default_context(cafile=certifi.where())
+    return ssl.create_default_context()
+
+
+def _open_url(request: urllib.request.Request, timeout: int):
+    context = _ssl_context()
+    try:
+        return urllib.request.urlopen(request, timeout=timeout, context=context)
+    except Exception as exc:
+        raise UpdateError(f"Network request failed: {exc}") from exc
 
 
 def parse_semver(version: str) -> tuple[int, int, int]:
@@ -39,7 +59,7 @@ def is_newer(current: str, candidate: str) -> bool:
 def fetch_latest_release(repo: str, channel: str = "stable") -> ReleaseInfo | None:
     endpoint = f"https://api.github.com/repos/{repo}/releases"
     request = urllib.request.Request(endpoint, headers={"Accept": "application/vnd.github+json", "User-Agent": "ServerManager"})
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with _open_url(request, timeout=15) as response:
         payload = json.loads(response.read().decode("utf-8"))
 
     if not isinstance(payload, list):
@@ -77,7 +97,7 @@ def fetch_latest_release(repo: str, channel: str = "stable") -> ReleaseInfo | No
 def download_release_asset(asset_url: str, target_zip: Path) -> Path:
     target_zip.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(asset_url, headers={"User-Agent": "ServerManager"})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with _open_url(request, timeout=60) as response:
         target_zip.write_bytes(response.read())
     return target_zip
 
