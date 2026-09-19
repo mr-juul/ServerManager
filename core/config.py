@@ -111,6 +111,12 @@ class AppSettings:
     update_channel: str = "stable"
     update_check_frequency: str = "startup"
     release_repository: str = "mr-juul/ServerManager"
+    web_control_enabled: bool = False
+    web_control_port: int = 8080
+    web_control_bind_address: str = "0.0.0.0"
+    web_control_password_hash: str = ""
+    web_control_https_cert: str = ""
+    web_control_https_key: str = ""
     watchdog_max_restarts: int = 5
     watchdog_window_minutes: int = 5
     watchdog_restart_delay_seconds: int = 5
@@ -119,6 +125,10 @@ class AppSettings:
 def ensure_runtime_layout(root: Path) -> None:
     required = [
         root / "config",
+        root / "mods",
+        root / "mods" / "library",
+        root / "mods" / "cache",
+        root / "mods" / "metadata",
         root / "servers",
         root / "backups",
         root / "logs",
@@ -252,6 +262,12 @@ class ConfigStore:
             update_channel=str(settings_raw.get("update_channel", "stable")),
             update_check_frequency=str(settings_raw.get("update_check_frequency", "startup")),
             release_repository=str(settings_raw.get("release_repository", "mr-juul/ServerManager")),
+            web_control_enabled=bool(settings_raw.get("web_control_enabled", False)),
+            web_control_port=max(1, min(65535, int(settings_raw.get("web_control_port", 8080)))),
+            web_control_bind_address=str(settings_raw.get("web_control_bind_address", "0.0.0.0") or "0.0.0.0"),
+            web_control_password_hash=str(settings_raw.get("web_control_password_hash", "")),
+            web_control_https_cert=str(settings_raw.get("web_control_https_cert", "")),
+            web_control_https_key=str(settings_raw.get("web_control_https_key", "")),
             watchdog_max_restarts=max(1, int(settings_raw.get("watchdog_max_restarts", 5))),
             watchdog_window_minutes=max(1, int(settings_raw.get("watchdog_window_minutes", 5))),
             watchdog_restart_delay_seconds=max(1, int(settings_raw.get("watchdog_restart_delay_seconds", 5))),

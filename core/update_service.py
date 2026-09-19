@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -40,8 +41,24 @@ def _open_url(request: urllib.request.Request, timeout: int):
     context = _ssl_context()
     try:
         return urllib.request.urlopen(request, timeout=timeout, context=context)
+    except urllib.error.HTTPError as exc:
+        raise UpdateError(f"HTTP {exc.code}: {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise UpdateError(f"Network error: {exc.reason}") from exc
     except Exception as exc:
         raise UpdateError(f"Network request failed: {exc}") from exc
+
+
+def normalize_repo(repo: str) -> str:
+    text = repo.strip().strip("/")
+    lowered = text.lower()
+    for prefix in ("https://github.com/", "http://github.com/", "github.com/"):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    if text.endswith(".git"):
+        text = text[:-4]
+    return text.strip().strip("/")
 
 
 def parse_semver(version: str) -> tuple[int, int, int]:
@@ -57,7 +74,10 @@ def is_newer(current: str, candidate: str) -> bool:
 
 
 def fetch_latest_release(repo: str, channel: str = "stable") -> ReleaseInfo | None:
-    endpoint = f"https://api.github.com/repos/{repo}/releases"
+    normalized_repo = normalize_repo(repo)
+    if normalized_repo.count("/") != 1:
+        raise UpdateError("Repository skal være i formatet owner/repo")
+    endpoint = f"https://api.github.com/repos/{normalized_repo}/releases"
     request = urllib.request.Request(endpoint, headers={"Accept": "application/vnd.github+json", "User-Agent": "ServerManager"})
     with _open_url(request, timeout=15) as response:
         payload = json.loads(response.read().decode("utf-8"))

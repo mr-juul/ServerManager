@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Server Manager Remote Control</title>
+  <link rel="stylesheet" href="/web-static/web_control.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div>
+        <h1>SERVER MANAGER</h1>
+        <div class="muted">Remote Control</div>
+      </div>
+      <button id="logoutBtn" class="hidden">Logout</button>
+    </div>
+
+    <div id="message" class="card hidden"></div>
+
+    <div id="setupBox" class="card hidden">
+      <div class="col">
+        <strong>Web Control is not configured</strong>
+        <input id="setupPassword" type="password" placeholder="Set password" />
+        <button id="setupBtn">Set password</button>
+      </div>
+    </div>
+
+    <div id="loginBox" class="card hidden">
+      <div class="col">
+        <input id="loginPassword" type="password" placeholder="Password" />
+        <button id="loginBtn">Login</button>
+      </div>
+    </div>
+
+    <div id="appBox" class="hidden">
+      <div id="servers"></div>
+      <div class="card hidden" id="logsBox">
+        <div class="row spread">
+          <strong id="logsTitle">Logs</strong>
+          <div class="row">
+            <button id="logsRefreshBtn">Refresh</button>
+            <button id="logsCloseBtn">Close</button>
+          </div>
+        </div>
+        <div id="logs"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/web-static/web_control.js" defer></script>
+</body>
+</html>

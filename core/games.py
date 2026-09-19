@@ -17,10 +17,13 @@ class GameDefinition:
     detection_capability: str = "FULL"
     installation_capability: str = "MANUAL"
     configuration_capability: str = "PARTIAL"
+    mod_support_enabled: bool = False
+    mod_adapter: str = "generic"
+    mod_loader: str = ""
 
 
 CATALOG: tuple[GameDefinition, ...] = (
-    GameDefinition("valheim", "Valheim", "Dedicated server for Valheim.", "🎮", 896660, server_search_names=("valheim_server.exe",), has_world=True, supported=True, detection_capability="FULL", installation_capability="FULL", configuration_capability="FULL"),
+    GameDefinition("valheim", "Valheim", "Dedicated server for Valheim.", "🎮", 896660, server_search_names=("valheim_server.exe",), has_world=True, supported=True, detection_capability="FULL", installation_capability="FULL", configuration_capability="FULL", mod_support_enabled=True, mod_adapter="valheim", mod_loader="BepInEx"),
     GameDefinition("minecraft-java", "Minecraft Java", "Java server instance.", "⛏", requires_java=True, server_search_names=("server.jar",), supported=True, detection_capability="FULL", installation_capability="MANUAL", configuration_capability="PARTIAL"),
     GameDefinition("terraria", "Terraria", "Terraria dedicated server.", "🧱", 105600, server_search_names=("TerrariaServer.exe",), supported=True, detection_capability="FULL", installation_capability="MANUAL", configuration_capability="PARTIAL"),
     GameDefinition("project-zomboid", "Project Zomboid", "Project Zomboid dedicated server.", "🧟", server_search_names=("StartServer64.bat",), supported=True, detection_capability="FULL", installation_capability="MANUAL", configuration_capability="PARTIAL"),

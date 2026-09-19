@@ -2,7 +2,7 @@
 
 A local Windows 10/11 desktop application for managing game and dedicated servers launched by `.bat` files. The core separates game definitions, installation detection, server instances, and live process state.
 
-The UI has three sections: `SERVERS` for running configured instances, `GAMES` for dependency and installation detection, and `SETTINGS`. Use `+ NY SERVER` to create an instance without editing JSON. The JSON files remain persistence/storage, not the primary workflow.
+The UI has four sections: `SERVERS` for running configured instances, `GAMES` for dependency and installation detection, `MODS` for library and profile management, and `SETTINGS`. Use `+ NY SERVER` to create an instance without editing JSON. The JSON files remain persistence/storage, not the primary workflow.
 
 ## Requirements
 
@@ -27,7 +27,55 @@ If PowerShell blocks activation, run the interpreter directly:
 .\.venv\Scripts\python.exe main.py
 ```
 
-The application is local-only and opens no network port.
+The desktop application is local-first. Network access is only used if you explicitly enable Web Control.
+
+## Web Control (Remote)
+
+Server Manager now includes an optional built-in Web Control service for simple remote operations only:
+
+- View servers
+- View server status
+- Start / Stop / Restart
+- View read-only logs
+
+It does **not** allow creating/deleting servers, changing configuration, running arbitrary commands, or editing paths.
+
+Enable it from desktop `Indstillinger`:
+
+- `Web Control` -> `Enabled`
+- Set `Port` (default `8080`)
+- Set `Bind address` (default `0.0.0.0` for LAN access)
+- Set a Web Control password (`Skift web-password`)
+
+When enabled, open the URL shown in Settings, for example:
+
+```text
+http://192.168.0.104:8080
+```
+
+Security notes:
+
+- Passwords are stored as Argon2 hashes, never plaintext
+- Session cookie is HttpOnly with SameSite=lax
+- API write actions use CSRF token checks
+- Login attempts are throttled
+- Logs are sanitized before being sent to browser
+- Use HTTPS before exposing beyond trusted LAN
+
+## Mod Management (Phase 1/2)
+
+The `MODS` section now provides a local mod library and server-specific mod assignment:
+
+- Import local `.zip` and `.dll` mods into the central library
+- Keep per-game mod entries with installed versions and latest version metadata
+- Open `MODS` on each server card to enable, disable, or uninstall mods for that server
+- Save and apply per-game mod profiles to toggle sets of mods quickly
+
+Current behavior notes:
+
+- `Disable` keeps the mod in library and marks it inactive on that server
+- `Uninstall` removes the mod from that server's managed mod folder
+- If a server is running, the UI prompts to stop it before making mod changes
 
 ## Configure the existing Valheim BAT
 
