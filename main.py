@@ -18,20 +18,32 @@ def application_root() -> Path:
 ROOT = application_root()
 
 
+def parse_startup_reason(argv: list[str]) -> str:
+    for argument in argv[1:]:
+        if argument.startswith("--startup-reason="):
+            reason = argument.split("=", 1)[1].strip().lower()
+            if reason in {"normal", "windows_startup", "manual", "recovery"}:
+                return reason
+    return "normal"
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Server Manager")
     apply_theme(app)
     logger = configure_logging(ROOT / "logs")
+    startup_reason = parse_startup_reason(sys.argv)
     try:
         settings, servers = ConfigStore(ROOT / "config" / "servers.json").load()
     except ConfigurationError as exc:
         logger.exception("Configuration error")
         QMessageBox.critical(None, "Configuration error", str(exc))
         return 1
-    window = MainWindow(settings, servers, ROOT / "logs", logger, ROOT)
+    window = MainWindow(settings, servers, ROOT / "logs", logger, ROOT, startup_reason)
     window.show()
-    if settings.start_servers_automatically:
+    if startup_reason == "recovery":
+        window.manager.auto_start_recovery()
+    elif settings.start_servers_automatically:
         window.manager.auto_start()
     return app.exec()
 

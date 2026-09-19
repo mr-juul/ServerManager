@@ -115,6 +115,14 @@ class ServerManager:
                 except Exception:
                     continue
 
+    def auto_start_recovery(self) -> None:
+        for server_id, config in self.configs.items():
+            if config.start_on_manager_recovery:
+                try:
+                    self.start(server_id, automatic=True)
+                except Exception:
+                    continue
+
     def shutdown(self) -> None:
         for timer in self._restart_timers.values():
             timer.cancel()

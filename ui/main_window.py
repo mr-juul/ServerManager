@@ -66,7 +66,7 @@ class ServerDialog(QDialog):
         self.managed = QCheckBox("Opret start-script og arbejdsmappe automatisk"); self.managed.setChecked(False)
         self.executable = QLineEdit(server.executable_directory if server else str(valheim_profile.get("installation_directory", ""))); executable_browse = QPushButton("Gennemse")
         executable_browse.clicked.connect(self._browse_installation)
-        self.auto_start = QCheckBox("Start automatisk med Server Manager"); self.auto_start.setChecked(server.auto_start if server else False); self.auto_restart = QCheckBox("Genstart automatisk ved crash"); self.auto_restart.setChecked(server.auto_restart if server else False)
+        self.auto_start = QCheckBox("Start automatisk med Server Manager"); self.auto_start.setChecked(server.auto_start if server else False); self.start_on_recovery = QCheckBox("Start efter Manager recovery"); self.start_on_recovery.setChecked(server.start_on_manager_recovery if server else False); self.auto_restart = QCheckBox("Genstart automatisk ved crash"); self.auto_restart.setChecked(server.auto_restart if server else False)
         self.delay = QSpinBox(); self.delay.setRange(1, 3600); self.delay.setValue(server.restart_delay if server else 10)
         if server: self.game.setCurrentIndex(max(0, self.game.findData(server.game)))
         self.game.currentIndexChanged.connect(self._update_fields); self.script.editingFinished.connect(self._populate_directory)
@@ -77,7 +77,7 @@ class ServerDialog(QDialog):
         script_row = QHBoxLayout(); script_row.addWidget(self.script); browse = QPushButton("Gennemse"); browse.clicked.connect(self._browse_script); script_row.addWidget(browse); form.addRow("Start-script", script_row)
         dir_row = QHBoxLayout(); dir_row.addWidget(self.directory); browse_dir = QPushButton("Gennemse"); browse_dir.clicked.connect(self._browse_directory); dir_row.addWidget(browse_dir); form.addRow("Arbejdsmappe", dir_row)
         world_dir_row = QHBoxLayout(); world_dir_row.addWidget(self.world_directory); browse_world = QPushButton("Gennemse"); browse_world.clicked.connect(self._browse_world_directory); world_dir_row.addWidget(browse_world); form.addRow("World-mappe", world_dir_row)
-        group = QGroupBox("AUTOMATIK"); auto = QFormLayout(group); auto.addRow(self.auto_start); auto.addRow(self.auto_restart); auto.addRow("Restart delay (sekunder)", self.delay); form.addRow(group)
+        group = QGroupBox("AUTOMATIK"); auto = QFormLayout(group); auto.addRow(self.auto_start); auto.addRow(self.start_on_recovery); auto.addRow(self.auto_restart); auto.addRow("Restart delay (sekunder)", self.delay); form.addRow(group)
         self.managed.toggled.connect(self._update_script_mode)
         self._update_fields()
         buttons = QHBoxLayout(); buttons.addStretch(); cancel = QPushButton("ANNULLER"); cancel.clicked.connect(self.reject); buttons.addWidget(cancel)
@@ -120,7 +120,7 @@ class ServerDialog(QDialog):
         elif not Path(self.directory.text()).is_dir(): QMessageBox.warning(self, "Mappe ikke fundet", "Vælg en eksisterende arbejdsmappe."); return
         self.accept()
     def server(self):
-        config = ServerConfig(id=self.server_id or uuid.uuid4().hex, name=self.name.text().strip(), script=self.script.text().strip(), working_directory=self.directory.text().strip(), game=self.game.currentData(), world=self.world.text().strip(), password=self.password.text(), port=self.port.value(), public=self.public.isChecked(), crossplay=self.crossplay.isChecked(), additional_arguments=self.arguments.text().strip(), world_directory=self.world_directory.text().strip(), executable_directory=self.executable.text().strip(), auto_start=self.auto_start.isChecked(), auto_restart=self.auto_restart.isChecked(), restart_delay=self.delay.value())
+        config = ServerConfig(id=self.server_id or uuid.uuid4().hex, name=self.name.text().strip(), script=self.script.text().strip(), working_directory=self.directory.text().strip(), game=self.game.currentData(), world=self.world.text().strip(), password=self.password.text(), port=self.port.value(), public=self.public.isChecked(), crossplay=self.crossplay.isChecked(), additional_arguments=self.arguments.text().strip(), world_directory=self.world_directory.text().strip(), executable_directory=self.executable.text().strip(), auto_start=self.auto_start.isChecked(), start_on_manager_recovery=self.start_on_recovery.isChecked(), auto_restart=self.auto_restart.isChecked(), restart_delay=self.delay.value())
         if self.managed.isChecked():
             config = generate_managed_server(config, self.app_root, self.executable.text().strip())
         return config
@@ -303,8 +303,8 @@ class GameCard(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings, servers, log_root, logger, app_root: Path | None = None):
-        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.game_statuses = {}; self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games()
+    def __init__(self, settings, servers, log_root, logger, app_root: Path | None = None, startup_reason: str = "normal"):
+        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.game_statuses = {}; self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games()
         self.system_timer = QTimer(self); self.system_timer.timeout.connect(self.update_system); self.system_timer.start(settings.refresh_interval_seconds * 1000); self.update_system()
 
     def _build_ui(self):
