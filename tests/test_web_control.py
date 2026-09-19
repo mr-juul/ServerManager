@@ -81,9 +81,9 @@ def test_login_failure_then_rate_limited():
     client, _ = _client()
     for _ in range(3):
         response = client.post("/api/auth/login", json={"password": "bad"})
-        assert response.status_code == 401
+        assert response.status_code in {401, 429}
     response = client.post("/api/auth/login", json={"password": "bad"})
-    assert response.status_code in {401, 429}
+    assert response.status_code == 429
 
 
 def test_unauthenticated_api_is_blocked():

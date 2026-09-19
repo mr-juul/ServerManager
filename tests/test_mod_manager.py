@@ -2,7 +2,7 @@ from pathlib import Path
 import zipfile
 
 from core.config import AppSettings, ConfigStore, ServerConfig
-from core.logging_setup import build_logger
+from core.logging_setup import configure_logging
 from core.mod_manager import ModManager
 
 
@@ -18,14 +18,13 @@ def _create_server(tmp_path: Path, game: str = "valheim") -> ServerConfig:
         id="alpha",
         name="Alpha",
         game=game,
-        executable=str(work / "server.exe"),
+        script=str(work / "start.bat"),
         working_directory=str(work),
-        args="",
     )
 
 
 def test_local_zip_import_and_listing(tmp_path):
-    logger = build_logger(tmp_path / "logs")
+    logger = configure_logging(tmp_path / "logs")
     manager = ModManager(tmp_path, logger)
 
     source_zip = tmp_path / "sample_mod-1.2.3.zip"
@@ -41,7 +40,7 @@ def test_local_zip_import_and_listing(tmp_path):
 
 
 def test_server_enable_disable_uninstall_cycle(tmp_path):
-    logger = build_logger(tmp_path / "logs")
+    logger = configure_logging(tmp_path / "logs")
     manager = ModManager(tmp_path, logger)
 
     source_zip = tmp_path / "cool_mod-0.1.0.zip"
@@ -65,7 +64,7 @@ def test_server_enable_disable_uninstall_cycle(tmp_path):
 
 
 def test_profiles_apply_diff(tmp_path):
-    logger = build_logger(tmp_path / "logs")
+    logger = configure_logging(tmp_path / "logs")
     manager = ModManager(tmp_path, logger)
 
     first = tmp_path / "first_mod-1.0.0.zip"
