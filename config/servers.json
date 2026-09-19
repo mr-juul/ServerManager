@@ -1,0 +1,35 @@
+{
+  "settings": {
+    "start_with_windows": true,
+    "minimize_to_tray": true,
+    "start_servers_automatically": true,
+    "log_retention_days": 30,
+    "refresh_interval_seconds": 2
+  },
+  "servers": [
+    {
+      "id": "valheim-kirken",
+      "name": "Valheim - Kirken",
+      "script": "C:\\Servers\\Valheim\\start.bat",
+      "working_directory": "C:\\Servers\\Valheim",
+      "game": "valheim",
+      "world": "Kirken2026",
+      "password": "",
+      "port": 2456,
+      "public": true,
+      "crossplay": true,
+      "additional_arguments": "",
+      "auto_start": false,
+      "auto_restart": true,
+      "restart_delay": 10,
+      "max_restarts": 5,
+      "restart_window_minutes": 15,
+      "backup": {
+        "enabled": false,
+        "source": "C:\\Servers\\Valheim\\worlds",
+        "destination": "D:\\ServerBackups\\Valheim",
+        "retention_days": 30
+      }
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+"""Server Manager desktop application."""

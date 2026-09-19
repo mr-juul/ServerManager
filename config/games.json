@@ -1,0 +1,17 @@
+{
+  "profiles": {
+    "valheim": {
+      "port": 2456,
+      "public": true,
+      "crossplay": true,
+      "additional_arguments": "-batchmode -nographics",
+      "installation_directory": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Valheim dedicated server"
+    }
+  },
+  "catalog": [
+    {"id": "valheim", "display_name": "Valheim", "steam_app_id": 896660},
+    {"id": "minecraft-java", "display_name": "Minecraft Java", "requires_java": true},
+    {"id": "terraria", "display_name": "Terraria", "steam_app_id": 105600},
+    {"id": "generic", "display_name": "Generic / Custom"}
+  ]
+}

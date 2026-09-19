@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Server Manager</title>
+    <meta
+      name="description"
+      content="Server Manager is a Windows desktop app for managing dedicated game servers with safe data storage, readiness checks, setup flows, and backups."
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="container nav">
+        <div class="brand">Server Manager</div>
+        <nav>
+          <a href="#features">Features</a>
+          <a href="#workflow">Workflow</a>
+          <a href="#download">Download</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="container hero-grid">
+          <div>
+            <p class="eyebrow">Windows desktop control panel</p>
+            <h1>Run your game servers without fighting the setup.</h1>
+            <p class="lead">
+              Server Manager keeps game data outside the install folder, detects missing
+              dependencies, and helps you set up Valheim and other dedicated servers with fewer manual steps.
+            </p>
+            <div class="cta-row">
+              <a class="primary" href="#download">Download app</a>
+              <a class="secondary" href="#features">See features</a>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Project status</h2>
+            <ul>
+              <li><span class="ok">●</span> External config storage</li>
+              <li><span class="ok">●</span> Steam detection</li>
+              <li><span class="ok">●</span> Ready/setup flow</li>
+              <li><span class="ok">●</span> Valheim-safe behavior</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section">
+        <div class="container">
+          <h2>Why this project exists</h2>
+          <div class="grid three">
+            <article class="feature">
+              <h3>Update safe</h3>
+              <p>Program data sits in ProgramData/ServerManager instead of inside the app folder, so an upgrade does not wipe your servers.</p>
+            </article>
+            <article class="feature">
+              <h3>Ready checks</h3>
+              <p>Steam, Java, dedicated server presence, and server configuration are all surfaced clearly instead of hidden in logs.</p>
+            </article>
+            <article class="feature">
+              <h3>Built for Windows</h3>
+              <p>The app is designed for Windows desktop use, including .bat-based server launch, logs, world backups, and process control.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow" class="section alt">
+        <div class="container">
+          <h2>Typical workflow</h2>
+          <ol class="steps">
+            <li>Install or open Server Manager</li>
+            <li>Let it detect Steam and libraries</li>
+            <li>Choose a game and run setup</li>
+            <li>Fix missing dependencies automatically</li>
+            <li>Create a server instance and launch it</li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="download" class="section">
+        <div class="container center">
+          <h2>Download</h2>
+          <p>Use GitHub Releases for the portable Windows package. GitHub Pages is used for the project landing page and documentation.</p>
+          <a class="primary" href="https://github.com/mr-juul/TrainFlow/releases" target="_blank" rel="noreferrer">Open releases</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="container">
+        <p>Server Manager — built for game server control on Windows.</p>
+      </div>
+    </footer>
+  </body>
+</html>
