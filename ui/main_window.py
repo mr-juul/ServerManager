@@ -36,6 +36,9 @@ from core.version import APP_VERSION, DEFAULT_RELEASE_REPO
 class EventBridge(QObject):
     status = Signal(str, str)
     output = Signal(str, str)
+    update_available = Signal(object)
+    update_none = Signal()
+    update_error = Signal(str)
 
 
 class DetectionWorker(QObject):
@@ -309,8 +312,8 @@ class GameCard(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings, servers, log_root, logger, app_root: Path | None = None, startup_reason: str = "normal"):
-        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.game_statuses = {}; self._latest_release = None; self._startup_enabled = False; self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games(); self.manager.reattach_existing_processes(); self._refresh_startup_state();
+    def __init__(self, settings, servers, log_root, logger, app_root: Path | None = None, startup_reason: str = "normal", install_root: Path | None = None):
+        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.install_root = install_root or Path(sys.executable).resolve().parent; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.game_statuses = {}; self._latest_release = None; self._startup_enabled = False; self.bridge.update_available.connect(self._notify_update); self.bridge.update_none.connect(self._notify_no_update); self.bridge.update_error.connect(self._notify_update_error); self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games(); self.manager.reattach_existing_processes(); self._refresh_startup_state();
         self.system_timer = QTimer(self); self.system_timer.timeout.connect(self.update_system); self.system_timer.start(settings.refresh_interval_seconds * 1000); self.update_system()
         if self.settings.automatic_update_checks and self.settings.update_check_frequency == "startup": self.check_updates(background=True)
 
@@ -385,7 +388,7 @@ class MainWindow(QMainWindow):
             self.settings = dialog.values(); self._save_configuration(); self.system_timer.setInterval(self.settings.refresh_interval_seconds * 1000)
             if previous_startup != self.settings.start_with_windows:
                 try:
-                    if self.settings.start_with_windows: enable_startup(self.app_root)
+                    if self.settings.start_with_windows: enable_startup(self.install_root)
                     else: disable_startup()
                 except StartupIntegrationError as exc:
                     QMessageBox.warning(self, "Startup integration", str(exc))
@@ -417,18 +420,20 @@ class MainWindow(QMainWindow):
             self.start_update(release)
 
     def check_updates(self, background: bool = True):
+        manual_check = not background
+
         def worker():
             try:
                 release = fetch_latest_release(self.settings.release_repository or DEFAULT_RELEASE_REPO, self.settings.update_channel)
                 if release and is_newer(APP_VERSION, release.version):
                     self._latest_release = release
-                    QTimer.singleShot(0, lambda: self._notify_update(release))
-                elif not background:
-                    QTimer.singleShot(0, lambda: QMessageBox.information(self, "Updates", "No updates available."))
+                    self.bridge.update_available.emit(release)
+                elif manual_check:
+                    self.bridge.update_none.emit()
             except Exception as exc:
                 self.logger.warning("Update check failed: %s", exc)
-                if not background:
-                    QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Updates", f"Update check failed: {exc}"))
+                if manual_check:
+                    self.bridge.update_error.emit(str(exc))
 
         threading.Thread(target=worker, daemon=True, name="update-check").start()
 
@@ -437,11 +442,17 @@ class MainWindow(QMainWindow):
             archive = self.app_root / "updates" / "downloads" / f"ServerManager-{release.version}.zip"
             download_release_asset(release.asset_url, archive)
             validate_release_zip(archive)
-            launch_updater(self.app_root, archive, os.getpid())
+            launch_updater(self.install_root, archive, os.getpid())
             QMessageBox.information(self, "Update", "Updater launched. Server Manager will close now.")
             self.exit_application()
         except (UpdateError, OSError) as exc:
             QMessageBox.warning(self, "Update failed", str(exc))
+
+    def _notify_no_update(self):
+        QMessageBox.information(self, "Updates", "No updates available.")
+
+    def _notify_update_error(self, message: str):
+        QMessageBox.warning(self, "Updates", f"Update check failed: {message}")
     def _confirm_shutdown(self) -> bool:
         answer = QMessageBox.question(
             self,

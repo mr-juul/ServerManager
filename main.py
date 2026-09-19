@@ -18,6 +18,12 @@ def application_root() -> Path:
 ROOT = application_root()
 
 
+def installation_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
 def parse_startup_reason(argv: list[str]) -> str:
     for argument in argv[1:]:
         if argument.startswith("--startup-reason="):
@@ -39,7 +45,7 @@ def main() -> int:
         logger.exception("Configuration error")
         QMessageBox.critical(None, "Configuration error", str(exc))
         return 1
-    window = MainWindow(settings, servers, ROOT / "logs", logger, ROOT, startup_reason)
+    window = MainWindow(settings, servers, ROOT / "logs", logger, ROOT, startup_reason, installation_root())
     window.show()
     if startup_reason == "recovery":
         window.manager.auto_start_recovery()
