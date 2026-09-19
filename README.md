@@ -133,6 +133,28 @@ If both secrets are present, the workflows sign:
 - `dist/ServerManager/ServerManagerWatchdog.exe`
 - `dist/ServerManager/ServerManagerUpdater.exe`
 
+## Release checklist
+
+Stable release:
+
+```powershell
+git checkout main
+git pull
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Beta release:
+
+```powershell
+git checkout main
+git pull
+git tag v1.1.0-beta.1
+git push origin v1.1.0-beta.1
+```
+
+After tag push, GitHub Actions builds and uploads `ServerManager.zip` to the corresponding GitHub Release.
+
 ## Test
 
 ```powershell
