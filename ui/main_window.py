@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -25,7 +27,10 @@ from core.managed_server import generate_managed_server, resolve_server_executab
 from core.valheim_backup import create_valheim_backup
 from core.server_process import ServerStatus
 from core.setup_engine import GameSetupEngine
+from core.startup_windows import StartupIntegrationError, disable as disable_startup, enable as enable_startup, is_enabled as startup_enabled
 from core.system_monitor import snapshot
+from core.update_service import UpdateError, download_release_asset, fetch_latest_release, is_newer, launch_updater, validate_release_zip
+from core.version import APP_VERSION, DEFAULT_RELEASE_REPO
 
 
 class EventBridge(QObject):
@@ -205,6 +210,7 @@ class GameSetupDialog(QDialog):
             world_directory=str(payload["world_directory"]),
             executable_directory=str(payload["executable_directory"]),
             auto_start=bool(payload["auto_start"]),
+            start_on_manager_recovery=bool(payload.get("start_on_manager_recovery", False)),
             auto_restart=bool(payload["auto_restart"]),
             restart_delay=int(payload["restart_delay"]),
             max_restarts=int(payload["max_restarts"]),
@@ -231,9 +237,9 @@ class GameSetupDialog(QDialog):
 
 class SettingsDialog(QDialog):
     def __init__(self, settings, parent=None):
-        super().__init__(parent); self.setWindowTitle("Indstillinger"); self.start_windows = QCheckBox(); self.start_windows.setChecked(settings.start_with_windows); self.minimize = QCheckBox(); self.minimize.setChecked(settings.minimize_to_tray); self.auto = QCheckBox(); self.auto.setChecked(settings.start_servers_automatically); self.refresh = QSpinBox(); self.refresh.setRange(1, 60); self.refresh.setValue(settings.refresh_interval_seconds); self.retention = QSpinBox(); self.retention.setRange(1, 3650); self.retention.setValue(settings.log_retention_days)
-        form = QFormLayout(self); form.addRow("Start med Windows", self.start_windows); form.addRow("Minimer til tray", self.minimize); form.addRow("Start servere automatisk", self.auto); form.addRow("Opdateringsinterval", self.refresh); form.addRow("Log retention", self.retention); buttons = QHBoxLayout(); save = QPushButton("GEM"); cancel = QPushButton("ANNULLER"); save.clicked.connect(self.accept); cancel.clicked.connect(self.reject); buttons.addWidget(cancel); buttons.addWidget(save); form.addRow(buttons)
-    def values(self): return AppSettings(self.start_windows.isChecked(), self.minimize.isChecked(), self.auto.isChecked(), self.retention.value(), self.refresh.value())
+        super().__init__(parent); self.setWindowTitle("Indstillinger"); self.start_windows = QCheckBox(); self.start_windows.setChecked(settings.start_with_windows); self.minimize = QCheckBox(); self.minimize.setChecked(settings.minimize_to_tray); self.auto = QCheckBox(); self.auto.setChecked(settings.start_servers_automatically); self.refresh = QSpinBox(); self.refresh.setRange(1, 60); self.refresh.setValue(settings.refresh_interval_seconds); self.retention = QSpinBox(); self.retention.setRange(1, 3650); self.retention.setValue(settings.log_retention_days); self.auto_updates = QCheckBox(); self.auto_updates.setChecked(settings.automatic_update_checks); self.channel = QComboBox(); self.channel.addItems(["stable", "beta"]); self.channel.setCurrentText(settings.update_channel); self.frequency = QComboBox(); self.frequency.addItems(["startup", "daily", "weekly"]); self.frequency.setCurrentText(settings.update_check_frequency); self.repository = QLineEdit(settings.release_repository)
+        form = QFormLayout(self); form.addRow("Start med Windows", self.start_windows); form.addRow("Minimer til tray", self.minimize); form.addRow("Start servere automatisk", self.auto); form.addRow("Opdateringsinterval", self.refresh); form.addRow("Log retention", self.retention); form.addRow("Automatisk update-check", self.auto_updates); form.addRow("Update kanal", self.channel); form.addRow("Check frekvens", self.frequency); form.addRow("GitHub repository", self.repository); buttons = QHBoxLayout(); save = QPushButton("GEM"); cancel = QPushButton("ANNULLER"); save.clicked.connect(self.accept); cancel.clicked.connect(self.reject); buttons.addWidget(cancel); buttons.addWidget(save); form.addRow(buttons)
+    def values(self): return AppSettings(start_with_windows=self.start_windows.isChecked(), minimize_to_tray=self.minimize.isChecked(), start_servers_automatically=self.auto.isChecked(), log_retention_days=self.retention.value(), refresh_interval_seconds=self.refresh.value(), automatic_update_checks=self.auto_updates.isChecked(), update_channel=self.channel.currentText(), update_check_frequency=self.frequency.currentText(), release_repository=self.repository.text().strip() or DEFAULT_RELEASE_REPO)
 
 
 class ServerCard(QWidget):
@@ -304,8 +310,9 @@ class GameCard(QWidget):
 
 class MainWindow(QMainWindow):
     def __init__(self, settings, servers, log_root, logger, app_root: Path | None = None, startup_reason: str = "normal"):
-        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.game_statuses = {}; self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games()
+        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.game_statuses = {}; self._latest_release = None; self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games(); self.manager.reattach_existing_processes();
         self.system_timer = QTimer(self); self.system_timer.timeout.connect(self.update_system); self.system_timer.start(settings.refresh_interval_seconds * 1000); self.update_system()
+        if self.settings.automatic_update_checks and self.settings.update_check_frequency == "startup": self.check_updates(background=True)
 
     def _build_ui(self):
         root = QWidget(); root_layout = QHBoxLayout(root); nav = QVBoxLayout(); brand = QLabel("SERVER\nMANAGER"); brand.setObjectName("appTitle"); nav.addWidget(brand); self.server_nav = QPushButton("🎮  SERVERS"); self.games_nav = QPushButton("🎯  GAMES"); self.settings_nav = QPushButton("⚙  SETTINGS"); nav.addWidget(self.server_nav); nav.addWidget(self.games_nav); nav.addWidget(self.settings_nav); nav.addStretch(); root_layout.addLayout(nav, 1); self.pages = QStackedWidget(); self.servers_page = self._build_servers_page(); self.games_page = self._build_games_page(); self.settings_page = self._build_settings_page(); [self.pages.addWidget(page) for page in (self.servers_page, self.games_page, self.settings_page)]; root_layout.addWidget(self.pages, 4); self.server_nav.clicked.connect(lambda: self.pages.setCurrentIndex(0)); self.games_nav.clicked.connect(lambda: self.pages.setCurrentIndex(1)); self.settings_nav.clicked.connect(lambda: self.pages.setCurrentIndex(2)); self.setCentralWidget(root)
@@ -315,7 +322,7 @@ class MainWindow(QMainWindow):
     def _build_games_page(self):
         page = QWidget(); layout = QVBoxLayout(page); header = QHBoxLayout(); title = QLabel("GAMES"); title.setObjectName("pageTitle"); header.addWidget(title); rescan = QPushButton("RESCAN ALL"); rescan.clicked.connect(self._rescan_games); header.addWidget(rescan); layout.addLayout(header); scroll = QScrollArea(); scroll.setWidgetResizable(True); self.game_container = QWidget(); self.game_layout = QVBoxLayout(self.game_container); scroll.setWidget(self.game_container); layout.addWidget(scroll); return page
     def _build_settings_page(self):
-        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("SETTINGS"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); layout.addStretch(); return page
+        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("SETTINGS"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); updates = QPushButton("CHECK FOR UPDATES"); updates.clicked.connect(lambda: self.check_updates(background=False)); layout.addWidget(updates); layout.addStretch(); return page
 
     def _rebuild_servers(self):
         while self.server_layout.count():
@@ -373,15 +380,60 @@ class MainWindow(QMainWindow):
     def _save_configuration(self): ConfigStore(self.app_root / "config" / "servers.json").save(self.settings, list(self.manager.configs.values()))
     def edit_settings(self):
         dialog = SettingsDialog(self.settings, self)
-        if dialog.exec() == QDialog.Accepted: self.settings = dialog.values(); self._save_configuration(); self.system_timer.setInterval(self.settings.refresh_interval_seconds * 1000)
+        if dialog.exec() == QDialog.Accepted:
+            previous_startup = self.settings.start_with_windows
+            self.settings = dialog.values(); self._save_configuration(); self.system_timer.setInterval(self.settings.refresh_interval_seconds * 1000)
+            if previous_startup != self.settings.start_with_windows:
+                try:
+                    if self.settings.start_with_windows: enable_startup(self.app_root)
+                    else: disable_startup()
+                except StartupIntegrationError as exc:
+                    QMessageBox.warning(self, "Startup integration", str(exc))
+            self._show_startup_state()
     def _build_menu(self):
-        menu = self.menuBar().addMenu("Menu"); menu.addAction("Ny server", self.add_server); menu.addAction("Settings", self.edit_settings); menu.addAction("Exit", self.exit_application)
+        menu = self.menuBar().addMenu("Menu"); menu.addAction("Ny server", self.add_server); menu.addAction("Settings", self.edit_settings); menu.addAction("Check for updates", lambda: self.check_updates(background=False)); menu.addAction("Exit", self.exit_application)
     def _build_tray(self):
         self.tray = QSystemTrayIcon(self); self.tray.setIcon(QApplication.style().standardIcon(QStyle.SP_ComputerIcon)); from PySide6.QtWidgets import QMenu; menu = QMenu(); menu.addAction("Åbn", self.showNormal); menu.addAction("Start alle", self.manager.start_all); menu.addAction("Stop alle", self.manager.stop_all); menu.addAction("Restart alle", self.manager.restart_all); menu.addAction("Exit", self.exit_application); self.tray.setContextMenu(menu); self.tray.show()
     def _status_event(self, server_id, status): self.bridge.status.emit(server_id, status.value)
     def _output_event(self, server_id, line): self.bridge.output.emit(server_id, line)
     def update_system(self):
-        values = snapshot(); self.system_label.setText(f"CPU {values['cpu']:.0f}%   RAM {values['ram']:.0f}%   Disk {values['disk']:.0f}%")
+        values = snapshot(); self.system_label.setText(f"CPU {values['cpu']:.0f}%   RAM {values['ram']:.0f}%   Disk {values['disk']:.0f}%   Startup: {'Enabled' if startup_enabled() else 'Disabled'}")
+
+    def _show_startup_state(self):
+        QMessageBox.information(self, "Startup", f"Startup is {'enabled' if startup_enabled() else 'disabled'}.")
+
+    def _notify_update(self, release):
+        message = f"Server Manager {release.version} is available.\n\nCurrent version: {APP_VERSION}\nLatest version: {release.version}\n\nInstall now?"
+        answer = QMessageBox.question(self, "Update available", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            self.start_update(release)
+
+    def check_updates(self, background: bool = True):
+        def worker():
+            try:
+                release = fetch_latest_release(self.settings.release_repository or DEFAULT_RELEASE_REPO, self.settings.update_channel)
+                if release and is_newer(APP_VERSION, release.version):
+                    self._latest_release = release
+                    QTimer.singleShot(0, lambda: self._notify_update(release))
+                elif not background:
+                    QTimer.singleShot(0, lambda: QMessageBox.information(self, "Updates", "No updates available."))
+            except Exception as exc:
+                self.logger.warning("Update check failed: %s", exc)
+                if not background:
+                    QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Updates", f"Update check failed: {exc}"))
+
+        threading.Thread(target=worker, daemon=True, name="update-check").start()
+
+    def start_update(self, release):
+        try:
+            archive = self.app_root / "updates" / "downloads" / f"ServerManager-{release.version}.zip"
+            download_release_asset(release.asset_url, archive)
+            validate_release_zip(archive)
+            launch_updater(self.app_root, archive, os.getpid())
+            QMessageBox.information(self, "Update", "Updater launched. Server Manager will close now.")
+            self.exit_application()
+        except (UpdateError, OSError) as exc:
+            QMessageBox.warning(self, "Update failed", str(exc))
     def _confirm_shutdown(self) -> bool:
         answer = QMessageBox.question(
             self,

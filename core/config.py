@@ -110,6 +110,7 @@ class AppSettings:
     automatic_update_checks: bool = True
     update_channel: str = "stable"
     update_check_frequency: str = "startup"
+    release_repository: str = "mr-juul/ServerManager"
     watchdog_max_restarts: int = 5
     watchdog_window_minutes: int = 5
     watchdog_restart_delay_seconds: int = 5
@@ -250,6 +251,7 @@ class ConfigStore:
             automatic_update_checks=bool(settings_raw.get("automatic_update_checks", True)),
             update_channel=str(settings_raw.get("update_channel", "stable")),
             update_check_frequency=str(settings_raw.get("update_check_frequency", "startup")),
+            release_repository=str(settings_raw.get("release_repository", "mr-juul/ServerManager")),
             watchdog_max_restarts=max(1, int(settings_raw.get("watchdog_max_restarts", 5))),
             watchdog_window_minutes=max(1, int(settings_raw.get("watchdog_window_minutes", 5))),
             watchdog_restart_delay_seconds=max(1, int(settings_raw.get("watchdog_restart_delay_seconds", 5))),

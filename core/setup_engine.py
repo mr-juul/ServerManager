@@ -90,6 +90,7 @@ class GameSetupEngine:
             "world_directory": "",
             "executable_directory": "",
             "auto_start": False,
+            "start_on_manager_recovery": False,
             "auto_restart": False,
             "restart_delay": 10,
             "max_restarts": 5,

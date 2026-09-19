@@ -123,6 +123,21 @@ class ServerManager:
                 except Exception:
                     continue
 
+    def reattach_existing_processes(self) -> int:
+        attached = 0
+        for server_id, process in self.processes.items():
+            try:
+                pid = process.find_running_root_pid()
+                if not pid:
+                    continue
+                process.attach_existing(pid)
+                attached += 1
+                self.logger.info("Existing server process detected for %s (pid=%s)", server_id, pid)
+            except Exception:
+                self.logger.exception("Failed to attach existing process for %s", server_id)
+                continue
+        return attached
+
     def shutdown(self) -> None:
         for timer in self._restart_timers.values():
             timer.cancel()

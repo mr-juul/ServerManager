@@ -42,9 +42,13 @@ if (-not $python) {
 
 if ($usePyLauncher) {
 	& $python -3.11 -m PyInstaller --noconfirm --clean --onedir --windowed --name ServerManager main.py
+	& $python -3.11 -m PyInstaller --noconfirm --clean --onefile --console --name ServerManagerWatchdog watchdog_main.py
+	& $python -3.11 -m PyInstaller --noconfirm --clean --onefile --windowed --name ServerManagerUpdater updater_main.py
 }
 else {
 	& $python -m PyInstaller --noconfirm --clean --onedir --windowed --name ServerManager main.py
+	& $python -m PyInstaller --noconfirm --clean --onefile --console --name ServerManagerWatchdog watchdog_main.py
+	& $python -m PyInstaller --noconfirm --clean --onefile --windowed --name ServerManagerUpdater updater_main.py
 }
 
 $target = Join-Path $project "dist\ServerManager"
@@ -52,6 +56,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $target "config") | Out-Nul
 Copy-Item -Force .\config\servers.json (Join-Path $target "config\servers.json")
 Copy-Item -Force .\config\games.json (Join-Path $target "config\games.json")
 New-Item -ItemType Directory -Force -Path (Join-Path $target "logs") | Out-Null
+Copy-Item -Force .\dist\ServerManagerWatchdog.exe (Join-Path $target "ServerManagerWatchdog.exe")
+Copy-Item -Force .\dist\ServerManagerUpdater.exe (Join-Path $target "ServerManagerUpdater.exe")
 
 Write-Host "Built: $target\ServerManager.exe"
+Write-Host "Built: $target\ServerManagerWatchdog.exe"
+Write-Host "Built: $target\ServerManagerUpdater.exe"
 Write-Host "Copy the complete dist\ServerManager folder to the Windows PC."

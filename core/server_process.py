@@ -38,6 +38,7 @@ class ServerProcess:
         self._output = deque(maxlen=2000)
         self._tracked_processes: list[psutil.Process] = []
         self._monitor_thread: threading.Thread | None = None
+        self._attached_root_pid: int | None = None
 
     @property
     def pid(self) -> int | None:
@@ -74,6 +75,8 @@ class ServerProcess:
         with self._lock:
             if self.process and self.process.poll() is None:
                 raise RuntimeError(f"{self.config.name} is already running")
+            if self._attached_root_pid and self._is_attached_process_alive():
+                raise RuntimeError(f"{self.config.name} is already running")
             script = Path(self.config.script)
             working_directory = Path(self.config.working_directory)
             if not script.is_file():
@@ -90,9 +93,25 @@ class ServerProcess:
                 text=True, encoding="utf-8", errors="replace", creationflags=creation_flags,
             )
             self.started_at = time.monotonic()
+            self._attached_root_pid = None
             self._tracked_processes = []
             self._set_status(ServerStatus.ONLINE)
             threading.Thread(target=self._read_output, daemon=True, name=f"log-{self.config.id}").start()
+            self._monitor_thread = threading.Thread(target=self._monitor, daemon=True, name=f"monitor-{self.config.id}")
+            self._monitor_thread.start()
+
+    def attach_existing(self, root_pid: int) -> None:
+        with self._lock:
+            root = psutil.Process(root_pid)
+            if not root.is_running() or root.status() == psutil.STATUS_ZOMBIE:
+                raise RuntimeError(f"Process {root_pid} is not running")
+            self.process = None
+            self._attached_root_pid = root_pid
+            self._intentional_stop = False
+            self.started_at = time.monotonic()
+            self._tracked_processes = []
+            self._remember_descendants()
+            self._set_status(ServerStatus.ONLINE)
             self._monitor_thread = threading.Thread(target=self._monitor, daemon=True, name=f"monitor-{self.config.id}")
             self._monitor_thread.start()
 
@@ -105,12 +124,18 @@ class ServerProcess:
 
     def _monitor(self) -> None:
         process = self.process
-        if not process:
+        if process:
+            while process.poll() is None:
+                self._remember_descendants()
+                time.sleep(0.25)
+            return_code = process.returncode
+        elif self._attached_root_pid:
+            return_code = 0
+            while self._is_attached_process_alive():
+                self._remember_descendants()
+                time.sleep(0.25)
+        else:
             return
-        while process.poll() is None:
-            self._remember_descendants()
-            time.sleep(0.25)
-        return_code = process.returncode
         self._remember_descendants()
         while self._live_processes():
             self._remember_descendants()
@@ -138,18 +163,47 @@ class ServerProcess:
         return live
 
     def _tree(self) -> list[psutil.Process]:
-        if not self.process:
-            return []
         try:
-            root = psutil.Process(self.process.pid)
+            root_pid = self.process.pid if self.process else self._attached_root_pid
+            if not root_pid:
+                return []
+            root = psutil.Process(root_pid)
             children = root.children(recursive=True)
             return ([root] if root.is_running() else []) + children
         except psutil.Error:
             return []
 
+    def _is_attached_process_alive(self) -> bool:
+        if not self._attached_root_pid:
+            return False
+        try:
+            root = psutil.Process(self._attached_root_pid)
+            return root.is_running() and root.status() != psutil.STATUS_ZOMBIE
+        except psutil.Error:
+            return False
+
+    def find_running_root_pid(self) -> int | None:
+        script = str(Path(self.config.script).resolve(strict=False)).lower()
+        working_directory = str(Path(self.config.working_directory).resolve(strict=False)).lower()
+        for process in psutil.process_iter(["pid", "name", "cmdline", "cwd"]):
+            try:
+                cmdline = [part.lower() for part in (process.info.get("cmdline") or [])]
+                if not cmdline:
+                    continue
+                if not any(script in part for part in cmdline):
+                    continue
+                cwd = str(process.info.get("cwd") or "").lower()
+                if working_directory and cwd and cwd != working_directory:
+                    continue
+                return int(process.info["pid"])
+            except (psutil.Error, OSError, TypeError, ValueError):
+                continue
+        return None
+
     def stop(self, timeout: float = 10.0) -> None:
         with self._lock:
-            if not self.process or self.process.poll() is not None:
+            attached_alive = self._is_attached_process_alive()
+            if (not self.process or self.process.poll() is not None) and not attached_alive:
                 self._set_status(ServerStatus.OFFLINE)
                 return
             self._intentional_stop = True
@@ -168,6 +222,7 @@ class ServerProcess:
             except psutil.Error:
                 pass
         with self._lock:
+            self._attached_root_pid = None
             self._set_status(ServerStatus.OFFLINE)
 
     def restart(self) -> None:
