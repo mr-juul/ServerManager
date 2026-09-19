@@ -62,6 +62,33 @@ Security notes:
 - Logs are sanitized before being sent to browser
 - Use HTTPS before exposing beyond trusted LAN
 
+## Public internet access (simple)
+
+If you want access from anywhere without Cloudflare, the simplest setup is direct HTTP with DNS + router port forward.
+
+1. Enable Web Control in the app and set a strong password.
+2. Run this script as Administrator:
+
+```powershell
+.\scripts\setup_public_webcontrol.ps1 -Domain sm.e-bold.dk -Port 8080
+```
+
+3. In your router, forward TCP `8080` to your server PC LAN IP on port `8080`.
+4. In DNS for your domain, create an A-record:
+  - `sm.e-bold.dk` -> your public IP
+
+Then open:
+
+```text
+http://sm.e-bold.dk:8080
+```
+
+Important:
+
+- This is easy but not encrypted (HTTP).
+- Keep a strong web password and only expose the port you need.
+- For better security later, place HTTPS reverse proxy in front (for example Caddy on port 443).
+
 ## Mod Management (Phase 1/2)
 
 The `MODS` section now provides a local mod library and server-specific mod assignment:
