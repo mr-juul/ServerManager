@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -442,6 +443,92 @@ class WebControlDiagnosticsDialog(QDialog):
         form.addRow(close_btn)
 
 
+class PublicWebAccessDialog(QDialog):
+    def __init__(self, local_ip: str, current_port: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Offentlig adgang til Web Control")
+        self.resize(760, 560)
+        self.local_ip = local_ip
+
+        self.domain = QLineEdit("sm.e-bold.dk")
+        self.domain.setPlaceholderText("Fx sm.e-bold.dk")
+        self.port = QSpinBox()
+        self.port.setRange(1, 65535)
+        self.port.setValue(max(1, int(current_port)))
+        self.guide = QPlainTextEdit()
+        self.guide.setReadOnly(True)
+
+        form = QFormLayout(self)
+        intro = QLabel("Brug denne guide til at åbne Web Control over internettet uden Cloudflare.")
+        intro.setWordWrap(True)
+        form.addRow(intro)
+        form.addRow("Domæne", self.domain)
+        form.addRow("Port", self.port)
+        form.addRow(self.guide)
+
+        row = QHBoxLayout()
+        refresh = QPushButton("OPDATER GUIDE")
+        refresh.clicked.connect(self._refresh_guide)
+        copy_btn = QPushButton("KOPIÉR GUIDE")
+        copy_btn.clicked.connect(self._copy_guide)
+        firewall_btn = QPushButton("AKTIVER FIREWALL-REGEL")
+        firewall_btn.clicked.connect(self._add_firewall_rule)
+        activate_btn = QPushButton("AKTIVER NU")
+        activate_btn.clicked.connect(self.accept)
+        close_btn = QPushButton("LUK")
+        close_btn.clicked.connect(self.reject)
+        row.addWidget(refresh)
+        row.addWidget(copy_btn)
+        row.addWidget(firewall_btn)
+        row.addWidget(activate_btn)
+        row.addWidget(close_btn)
+        form.addRow(row)
+
+        self._refresh_guide()
+
+    def _guide_text(self) -> str:
+        domain = self.domain.text().strip() or "sm.e-bold.dk"
+        port = self.port.value()
+        return (
+            "1) Aktivér Web Control i appen med et stærkt password.\n"
+            f"2) DNS: Opret A-record '{domain}' -> din offentlige IP.\n"
+            f"3) Router: Forward TCP {port} -> {self.local_ip}:{port}.\n"
+            f"4) Windows Firewall: Tillad TCP {port} (kan gøres med knappen her).\n"
+            "5) Test fra mobilnet (ikke Wi-Fi):\n"
+            f"   http://{domain}:{port}\n\n"
+            "Tip: Hvis din offentlige IP ændrer sig, skal DNS opdateres."
+        )
+
+    def _refresh_guide(self):
+        self.guide.setPlainText(self._guide_text())
+
+    def _copy_guide(self):
+        QApplication.clipboard().setText(self.guide.toPlainText())
+        QMessageBox.information(self, "Guide kopieret", "Guiden er kopieret til udklipsholderen.")
+
+    def _add_firewall_rule(self):
+        port = self.port.value()
+        rule_name = f"ServerManager-WebControl-{port}"
+        command = [
+            "netsh",
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            f"name={rule_name}",
+            "dir=in",
+            "action=allow",
+            "protocol=TCP",
+            f"localport={port}",
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+            QMessageBox.information(self, "Firewall", f"Regel oprettet: {rule_name}")
+        except Exception:
+            manual = " ".join(command)
+            QMessageBox.warning(self, "Firewall", f"Kunne ikke oprette regel automatisk. Kør som administrator:\n\n{manual}")
+
+
 class ModImportDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -822,7 +909,7 @@ class MainWindow(QMainWindow):
     def _build_mods_page(self):
         page = QWidget(); layout = QVBoxLayout(page); header = QHBoxLayout(); title = QLabel("MOD LIBRARY"); title.setObjectName("pageTitle"); header.addWidget(title); add = QPushButton("+ Add mod"); add.clicked.connect(self.import_mod_to_library); header.addWidget(add); layout.addLayout(header); self.mod_search = QLineEdit(); self.mod_search.setPlaceholderText("Search mods..."); self.mod_search.textChanged.connect(self._render_mod_library); layout.addWidget(self.mod_search); scroll = QScrollArea(); scroll.setWidgetResizable(True); self.mod_container = QWidget(); self.mod_layout = QVBoxLayout(self.mod_container); scroll.setWidget(self.mod_container); layout.addWidget(scroll); self._render_mod_library(); return page
     def _build_settings_page(self):
-        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("INDSTILLINGER"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); self.version_label = QLabel(f"Nuværende version: {APP_VERSION}"); self.latest_label = QLabel("Seneste version: ukendt"); layout.addWidget(self.version_label); layout.addWidget(self.latest_label); updates = QPushButton("TJEK FOR OPDATERINGER"); updates.clicked.connect(lambda: self.check_updates(background=False)); layout.addWidget(updates); web_group = QGroupBox("WEB CONTROL"); web_layout = QFormLayout(web_group); self.web_status_label = QLabel("Ikke aktiv"); self.web_url_label = QLabel("-"); self.web_error_label = QLabel("-"); self.web_https_label = QLabel("Ikke konfigureret"); self.web_exposure_label = QLabel("Automatisk"); self.web_password_label = QLabel("Ikke konfigureret"); open_web = QPushButton("ÅBN WEB CONTROL"); open_web.clicked.connect(self.open_web_control); enable_web = QPushButton("AKTIVER WEB CONTROL"); enable_web.clicked.connect(self.enable_web_control_simple); disable_web = QPushButton("DEAKTIVER WEB CONTROL"); disable_web.clicked.connect(self.disable_web_control_simple); change_web_password = QPushButton("SKIFT WEB-PASSWORD"); change_web_password.clicked.connect(self.change_web_control_password_simple); restart_web = QPushButton("GENSTART WEB CONTROL"); restart_web.clicked.connect(self.restart_web_control); diagnostics_web = QPushButton("WEB DIAGNOSTIK"); diagnostics_web.clicked.connect(self.show_web_control_diagnostics); web_layout.addRow("Status", self.web_status_label); web_layout.addRow("Web-adresse", self.web_url_label); web_layout.addRow("Password", self.web_password_label); web_layout.addRow("Sikkerhed", self.web_https_label); web_layout.addRow("Netværk", self.web_exposure_label); web_layout.addRow("Fejl", self.web_error_label); web_layout.addRow(open_web); web_layout.addRow(enable_web); web_layout.addRow(change_web_password); web_layout.addRow(disable_web); web_layout.addRow(restart_web); web_layout.addRow(diagnostics_web); layout.addWidget(web_group); layout.addStretch(); return page
+        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("INDSTILLINGER"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); self.version_label = QLabel(f"Nuværende version: {APP_VERSION}"); self.latest_label = QLabel("Seneste version: ukendt"); layout.addWidget(self.version_label); layout.addWidget(self.latest_label); updates = QPushButton("TJEK FOR OPDATERINGER"); updates.clicked.connect(lambda: self.check_updates(background=False)); layout.addWidget(updates); web_group = QGroupBox("WEB CONTROL"); web_layout = QFormLayout(web_group); self.web_status_label = QLabel("Ikke aktiv"); self.web_url_label = QLabel("-"); self.web_error_label = QLabel("-"); self.web_https_label = QLabel("Ikke konfigureret"); self.web_exposure_label = QLabel("Automatisk"); self.web_password_label = QLabel("Ikke konfigureret"); open_web = QPushButton("ÅBN WEB CONTROL"); open_web.clicked.connect(self.open_web_control); enable_web = QPushButton("AKTIVER WEB CONTROL"); enable_web.clicked.connect(self.enable_web_control_simple); disable_web = QPushButton("DEAKTIVER WEB CONTROL"); disable_web.clicked.connect(self.disable_web_control_simple); change_web_password = QPushButton("SKIFT WEB-PASSWORD"); change_web_password.clicked.connect(self.change_web_control_password_simple); public_guide = QPushButton("GUIDE: OFFENTLIG ADGANG"); public_guide.clicked.connect(self.open_public_web_access_guide); restart_web = QPushButton("GENSTART WEB CONTROL"); restart_web.clicked.connect(self.restart_web_control); diagnostics_web = QPushButton("WEB DIAGNOSTIK"); diagnostics_web.clicked.connect(self.show_web_control_diagnostics); web_layout.addRow("Status", self.web_status_label); web_layout.addRow("Web-adresse", self.web_url_label); web_layout.addRow("Password", self.web_password_label); web_layout.addRow("Sikkerhed", self.web_https_label); web_layout.addRow("Netværk", self.web_exposure_label); web_layout.addRow("Fejl", self.web_error_label); web_layout.addRow(open_web); web_layout.addRow(enable_web); web_layout.addRow(change_web_password); web_layout.addRow(disable_web); web_layout.addRow(public_guide); web_layout.addRow(restart_web); web_layout.addRow(diagnostics_web); layout.addWidget(web_group); layout.addStretch(); return page
 
     def _rebuild_servers(self):
         while self.server_layout.count():
@@ -1130,6 +1217,24 @@ class MainWindow(QMainWindow):
         self.settings.web_control_enabled = False
         self._save_configuration()
         self._apply_web_control_settings()
+
+    def open_public_web_access_guide(self):
+        local_ip = self.web_control.local_ip()
+        dialog = PublicWebAccessDialog(local_ip, int(self.settings.web_control_port), self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        if not self.settings.web_control_password_hash.strip():
+            pwd = WebPasswordDialog(self)
+            if pwd.exec() != QDialog.Accepted:
+                return
+            self.settings.web_control_password_hash = pwd.password_hash
+        self.settings.web_control_enabled = True
+        self.settings.web_control_bind_address = "0.0.0.0"
+        self.settings.web_control_port = dialog.port.value()
+        self._save_configuration()
+        self._apply_web_control_settings()
+        domain = dialog.domain.text().strip() or "sm.e-bold.dk"
+        QMessageBox.information(self, "Offentlig adgang", f"Web Control er aktiveret.\n\nNår DNS og router er sat op, brug:\nhttp://{domain}:{self.settings.web_control_port}")
 
     def _apply_web_control_settings(self):
         self._ensure_web_control_defaults()
