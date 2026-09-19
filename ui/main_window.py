@@ -387,10 +387,15 @@ class WebPasswordDialog(QDialog):
         self.password_hash = ""
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
+        self.password.setPlaceholderText("Min. 8 tegn, fx MitSikrePassword123")
         self.confirm = QLineEdit()
         self.confirm.setEchoMode(QLineEdit.Password)
+        self.confirm.setPlaceholderText("Skriv samme password igen")
 
         form = QFormLayout(self)
+        info = QLabel("Dette password bruges til login i Web Control fra telefon eller anden computer.")
+        info.setWordWrap(True)
+        form.addRow(info)
         form.addRow("Nyt password", self.password)
         form.addRow("Bekræft password", self.confirm)
 
@@ -583,13 +588,16 @@ class QuickCreateServerDialog(QDialog):
             self.game.addItem(f"{status.definition.icon}  {status.definition.display_name}", status.definition.id)
 
         self.name = QLineEdit("")
+        self.name.setPlaceholderText("Fx Kirken, Survival, Venne-server")
         self.password = QLineEdit("")
         self.password.setEchoMode(QLineEdit.Password)
+        self.password.setPlaceholderText("Valgfrit for nogle spil")
 
         self.new_world = QRadioButton("Opret ny verden")
         self.existing_world = QRadioButton("Brug eksisterende verden")
         self.new_world.setChecked(True)
         self.world_name = QLineEdit("")
+        self.world_name.setPlaceholderText("Fx MyWorld")
         self.world_list = QComboBox()
 
         self.mc_version = QComboBox()
@@ -612,6 +620,9 @@ class QuickCreateServerDialog(QDialog):
         self.advanced.toggled.connect(self._open_advanced_immediately)
 
         layout = QFormLayout(self)
+        self.help_text = QLabel("")
+        self.help_text.setWordWrap(True)
+        layout.addRow(self.help_text)
         layout.addRow("Vælg spil", self.game)
         layout.addRow("Servernavn", self.name)
         layout.addRow("Adgangskode", self.password)
@@ -640,6 +651,12 @@ class QuickCreateServerDialog(QDialog):
         selected = game_definition(str(self.game.currentData() or "generic"))
         has_world = selected.has_world
         minecraft = selected.id == "minecraft-java"
+        if selected.id == "valheim":
+            self.help_text.setText("Du skal kun vælge navn og password. Resten konfigureres automatisk.")
+        elif selected.id == "minecraft-java":
+            self.help_text.setText("Vælg navn. Version og servertype har sikre standarder, som du kan ændre hvis du vil.")
+        else:
+            self.help_text.setText("Vælg navn (og evt. password/world). Server Manager klarer resten automatisk.")
         self.new_world.setVisible(has_world)
         self.existing_world.setVisible(has_world)
         self.world_name.setVisible(has_world and self.new_world.isChecked())
