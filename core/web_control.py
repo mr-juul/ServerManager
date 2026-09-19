@@ -116,6 +116,9 @@ class WebControlService:
             "log_level": "warning",
             "access_log": False,
             "lifespan": "off",
+            # PyInstaller onefile builds can miss uvicorn's default logging formatter wiring.
+            # We rely on the app logger instead of uvicorn's dictConfig.
+            "log_config": None,
         }
 
         if cert or key:
