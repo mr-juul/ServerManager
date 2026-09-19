@@ -11,11 +11,13 @@ class StartupIntegrationError(RuntimeError):
 
 
 def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess[str]:
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.run(
         ["schtasks.exe", *args],
         capture_output=True,
         text=True,
         check=False,
+        creationflags=creation_flags,
     )
 
 

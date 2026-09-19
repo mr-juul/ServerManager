@@ -310,7 +310,7 @@ class GameCard(QWidget):
 
 class MainWindow(QMainWindow):
     def __init__(self, settings, servers, log_root, logger, app_root: Path | None = None, startup_reason: str = "normal"):
-        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.game_statuses = {}; self._latest_release = None; self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games(); self.manager.reattach_existing_processes();
+        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.game_statuses = {}; self._latest_release = None; self._startup_enabled = False; self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games(); self.manager.reattach_existing_processes(); self._refresh_startup_state();
         self.system_timer = QTimer(self); self.system_timer.timeout.connect(self.update_system); self.system_timer.start(settings.refresh_interval_seconds * 1000); self.update_system()
         if self.settings.automatic_update_checks and self.settings.update_check_frequency == "startup": self.check_updates(background=True)
 
@@ -389,6 +389,7 @@ class MainWindow(QMainWindow):
                     else: disable_startup()
                 except StartupIntegrationError as exc:
                     QMessageBox.warning(self, "Startup integration", str(exc))
+            self._refresh_startup_state()
             self._show_startup_state()
     def _build_menu(self):
         menu = self.menuBar().addMenu("Menu"); menu.addAction("Ny server", self.add_server); menu.addAction("Settings", self.edit_settings); menu.addAction("Check for updates", lambda: self.check_updates(background=False)); menu.addAction("Exit", self.exit_application)
@@ -397,10 +398,17 @@ class MainWindow(QMainWindow):
     def _status_event(self, server_id, status): self.bridge.status.emit(server_id, status.value)
     def _output_event(self, server_id, line): self.bridge.output.emit(server_id, line)
     def update_system(self):
-        values = snapshot(); self.system_label.setText(f"CPU {values['cpu']:.0f}%   RAM {values['ram']:.0f}%   Disk {values['disk']:.0f}%   Startup: {'Enabled' if startup_enabled() else 'Disabled'}")
+        values = snapshot(); self.system_label.setText(f"CPU {values['cpu']:.0f}%   RAM {values['ram']:.0f}%   Disk {values['disk']:.0f}%   Startup: {'Enabled' if self._startup_enabled else 'Disabled'}")
+
+    def _refresh_startup_state(self):
+        try:
+            self._startup_enabled = startup_enabled()
+        except Exception:
+            self._startup_enabled = False
+            self.logger.warning("Could not read Windows startup task state", exc_info=True)
 
     def _show_startup_state(self):
-        QMessageBox.information(self, "Startup", f"Startup is {'enabled' if startup_enabled() else 'disabled'}.")
+        QMessageBox.information(self, "Startup", f"Startup is {'enabled' if self._startup_enabled else 'disabled'}.")
 
     def _notify_update(self, release):
         message = f"Server Manager {release.version} is available.\n\nCurrent version: {APP_VERSION}\nLatest version: {release.version}\n\nInstall now?"
