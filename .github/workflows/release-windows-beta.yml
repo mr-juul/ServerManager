@@ -69,10 +69,17 @@ jobs:
           .\build_windows.ps1
 
       - name: Sign executables (optional)
-        if: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
         shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          [IO.File]::WriteAllBytes("codesign.pfx", [Convert]::FromBase64String("${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}"))
+          if (-not $env:WINDOWS_CERTIFICATE_BASE64 -or -not $env:WINDOWS_CERTIFICATE_PASSWORD) {
+            Write-Host "Signing skipped: certificate secrets are not configured."
+            exit 0
+          }
+
+          [IO.File]::WriteAllBytes("codesign.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
           $files = @(
             ".\dist\ServerManager\ServerManager.exe",
             ".\dist\ServerManager\ServerManagerWatchdog.exe",
@@ -82,7 +89,7 @@ jobs:
             if (-not (Test-Path $file)) {
               throw "Missing file for signing: $file"
             }
-            signtool sign /f codesign.pfx /p "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file
+            signtool sign /f codesign.pfx /p "$env:WINDOWS_CERTIFICATE_PASSWORD" /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file
           }
 
       - name: Create release zip
