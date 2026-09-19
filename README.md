@@ -107,6 +107,32 @@ python -m PyInstaller --noconfirm --clean --onedir --windowed --name ServerManag
 
 The supplied `build_windows.ps1` runs this command and copies both configuration files beside the executable. The complete `dist\ServerManager` directory is the portable application; do not copy only the EXE because PySide6 runtime files are included in the neighboring folders.
 
+## Release automation (GitHub Actions)
+
+This repository includes three release-related workflows:
+
+- `.github/workflows/release-windows.yml`
+  - Stable releases for tags like `v1.5.0`
+  - Builds `ServerManager.exe`, `ServerManagerWatchdog.exe`, and `ServerManagerUpdater.exe`
+  - Packages `dist/ServerManager.zip`
+  - Publishes a normal GitHub Release
+- `.github/workflows/release-windows-beta.yml`
+  - Prereleases for tags like `v1.6.0-beta.1` or `v1.6.0-rc.1`
+  - Publishes a GitHub prerelease with `dist/ServerManager.zip`
+- `.github/workflows/sync-version-from-tag.yml`
+  - Syncs `core/version.py` (`APP_VERSION`) to the pushed tag version and commits it to `main`
+
+Optional code signing for release workflows:
+
+- Add repository secret `WINDOWS_CERTIFICATE_BASE64` with your PFX encoded as base64
+- Add repository secret `WINDOWS_CERTIFICATE_PASSWORD` with the PFX password
+
+If both secrets are present, the workflows sign:
+
+- `dist/ServerManager/ServerManager.exe`
+- `dist/ServerManager/ServerManagerWatchdog.exe`
+- `dist/ServerManager/ServerManagerUpdater.exe`
+
 ## Test
 
 ```powershell

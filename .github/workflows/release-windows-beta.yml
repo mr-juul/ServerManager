@@ -1,13 +1,14 @@
-name: Release Windows Build
+name: Release Windows Beta Build
 
 on:
   push:
     tags:
-      - "v*"
+      - "v*-beta*"
+      - "v*-rc*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing git tag to release (for example v1.5.0)"
+        description: "Existing prerelease git tag (for example v1.6.0-beta.1)"
         required: true
         type: string
 
@@ -16,7 +17,6 @@ permissions:
 
 jobs:
   build-and-release:
-    if: ${{ github.event_name == 'workflow_dispatch' || (!contains(github.ref_name, '-beta') && !contains(github.ref_name, '-rc')) }}
     runs-on: windows-latest
 
     steps:
@@ -93,13 +93,13 @@ jobs:
           }
           Compress-Archive -Path .\dist\ServerManager\* -DestinationPath .\dist\ServerManager.zip
 
-      - name: Publish GitHub release
+      - name: Publish GitHub prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
           files: dist/ServerManager.zip
           generate_release_notes: true
-          prerelease: false
+          prerelease: true
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

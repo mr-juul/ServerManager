@@ -1,0 +1,40 @@
+name: Sync Version From Tag
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  sync-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync version.py
+        run: |
+          python scripts/sync_version.py --tag "${{ github.ref_name }}"
+
+      - name: Commit and push version update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add core/version.py
+          if git diff --cached --quiet; then
+            echo "No version change needed"
+            exit 0
+          fi
+          git commit -m "Sync APP_VERSION to ${{ github.ref_name }}"
+          git push origin HEAD:main
