@@ -178,3 +178,35 @@ def test_static_web_assets_are_served():
     assert js.status_code == 200
     assert "--bg" in css.text
     assert "bootstrap()" in js.text
+
+
+def test_v1_servers_with_session_auth():
+    client, _ = _client()
+    _login(client)
+    response = client.get("/api/v1/servers")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["servers"][0]["id"] == "valheim-kirken"
+    assert "status" in payload["servers"][0]
+
+
+def test_v1_start_accepts_api_key_without_csrf(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, manager = _client()
+    response = client.post("/api/v1/servers/valheim-kirken/start", json={}, headers={"X-API-Key": "abc123"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["status"] in {"running", "starting"}
+    assert manager.started == 1
+
+
+def test_v1_unknown_server_returns_structured_error(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, _ = _client()
+    response = client.get("/api/v1/servers/missing", headers={"X-API-Key": "abc123"})
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"] == "server_not_found"

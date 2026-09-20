@@ -62,6 +62,57 @@ Security notes:
 - Logs are sanitized before being sent to browser
 - Use HTTPS before exposing beyond trusted LAN
 
+## External Web Control API (v1)
+
+Server Manager now provides a narrow versioned API for external remote-control websites.
+
+Available endpoints:
+
+- GET /api/v1/status
+- GET /api/v1/servers
+- GET /api/v1/servers/{server_id}
+- POST /api/v1/servers/{server_id}/start
+- POST /api/v1/servers/{server_id}/stop
+- POST /api/v1/servers/{server_id}/restart
+- GET /api/v1/servers/{server_id}/logs
+
+Security behavior:
+
+- No executable paths, BAT paths, directories, or command-lines are returned.
+- Actions are limited to start/stop/restart only.
+- Concurrent start/stop/restart calls per server are locked.
+- v1 accepts either authenticated web session or API key header `X-API-Key`.
+
+### External website components
+
+This repository includes separate components:
+
+- Website frontend: [website/index.html](website/index.html)
+- Website backend: [website_backend/app.py](website_backend/app.py)
+- Server Manager API client for backend: [website_backend/server_manager_client.py](website_backend/server_manager_client.py)
+
+### Run external website backend
+
+Set these environment variables before launch:
+
+- `SERVER_MANAGER_API_KEY`: used by Server Manager v1 API (desktop app process env)
+- `SM_API_KEY`: same key used by website backend client
+- `SM_API_BASE_URL`: usually `http://127.0.0.1:8080`
+
+Start backend:
+
+```powershell
+c:/Users/Mr-Ju/ServerManager/.venv/Scripts/python.exe -m uvicorn website_backend.app:app --host 0.0.0.0 --port 8090
+```
+
+Then open:
+
+```text
+http://<server-ip>:8090
+```
+
+The website stays a thin remote control: login, list servers, start, stop, restart, and logs.
+
 ## Public internet access (simple)
 
 If you want access from anywhere without Cloudflare, the simplest setup is direct HTTP with DNS + router port forward.

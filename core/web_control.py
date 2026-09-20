@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 import secrets
 import socket
 import threading
@@ -31,6 +32,12 @@ class _Session:
     session_id: str
     csrf_token: str
     expires_at: float
+
+
+@dataclass
+class _AccessContext:
+    session: _Session | None
+    via_api_key: bool
 
 
 class WebControlService:
@@ -175,6 +182,7 @@ class _WebControlBackend:
         self.password_hasher = PasswordHasher()
         self.sessions: dict[str, _Session] = {}
         self.failed_logins: dict[str, dict[str, float]] = {}
+        self.operation_locks: dict[str, threading.Lock] = {}
         self.lock = threading.RLock()
 
     def _client_ip(self, request: Request) -> str:
@@ -262,6 +270,34 @@ class _WebControlBackend:
             "players": None,
         }
 
+    def _server_payload_v1(self, server_id: str) -> dict[str, Any]:
+        config = self.manager.configs[server_id]
+        process = self.manager.processes[server_id]
+        return {
+            "id": config.id,
+            "name": config.name,
+            "game": config.game,
+            "status": self._server_state(process).lower(),
+        }
+
+    def _api_key(self) -> str:
+        return str(os.environ.get("SERVER_MANAGER_API_KEY", "")).strip()
+
+    def _is_api_key_authorized(self, request: Request) -> bool:
+        configured = self._api_key()
+        if not configured:
+            return False
+        provided = request.headers.get("X-API-Key", "").strip()
+        return bool(provided) and secrets.compare_digest(configured, provided)
+
+    def _action_lock(self, server_id: str) -> threading.Lock:
+        with self.lock:
+            lock = self.operation_locks.get(server_id)
+            if lock is None:
+                lock = threading.Lock()
+                self.operation_locks[server_id] = lock
+            return lock
+
     def _get_server_or_404(self, server_id: str):
         if server_id not in self.manager.configs or server_id not in self.manager.processes:
             raise HTTPException(status_code=404, detail="server_not_found")
@@ -297,9 +333,25 @@ def create_web_app(
             raise HTTPException(status_code=401, detail="unauthorized")
         return session
 
+    async def _require_v1_access(request: Request) -> _AccessContext:
+        if backend._is_api_key_authorized(request):
+            return _AccessContext(session=None, via_api_key=True)
+        session = backend._session_from_request(request)
+        if not session:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return _AccessContext(session=session, via_api_key=False)
+
+    def _v1_success(**payload: Any) -> dict[str, Any]:
+        return {"success": True, **payload}
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         detail = str(exc.detail)
+        if request.url.path.startswith("/api/v1/"):
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"success": False, "error": detail, "message": detail.replace("_", " ").capitalize()},
+            )
         if request.url.path.startswith("/api/"):
             return JSONResponse(status_code=exc.status_code, content={"error": detail})
         if exc.status_code == 401:
@@ -400,15 +452,42 @@ def create_web_app(
     async def api_status(_session: _Session = Depends(_require_auth)):
         return {"server_manager": {"version": APP_VERSION, "status": "running"}}
 
+    @app.get("/api/v1/status")
+    async def api_v1_status(_access: _AccessContext = Depends(_require_v1_access)):
+        return _v1_success(status="online", version=APP_VERSION)
+
     @app.get("/api/servers")
     async def api_servers(_session: _Session = Depends(_require_auth)):
         servers = [backend._server_payload(server_id) for server_id in manager.configs.keys()]
         return {"servers": servers}
 
+    @app.get("/api/v1/servers")
+    async def api_v1_servers(_access: _AccessContext = Depends(_require_v1_access)):
+        servers = [backend._server_payload_v1(server_id) for server_id in manager.configs.keys()]
+        return _v1_success(servers=servers)
+
     @app.get("/api/servers/{server_id}")
     async def api_server(server_id: str, _session: _Session = Depends(_require_auth)):
         backend._get_server_or_404(server_id)
         return backend._server_payload(server_id)
+
+    @app.get("/api/v1/servers/{server_id}")
+    async def api_v1_server(server_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        backend._get_server_or_404(server_id)
+        return _v1_success(server=backend._server_payload_v1(server_id))
+
+    def _require_v1_write(request: Request, access: _AccessContext) -> None:
+        if access.via_api_key:
+            return
+        if not access.session:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        backend._require_csrf(request, access.session)
+
+    def _acquire_action_lock_or_raise(server_id: str) -> threading.Lock:
+        lock = backend._action_lock(server_id)
+        if not lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="operation_in_progress")
+        return lock
 
     @app.post("/api/servers/{server_id}/start")
     async def api_start(server_id: str, request: Request, session: _Session = Depends(_require_auth)):
@@ -425,6 +504,25 @@ def create_web_app(
         logger.info("Web action: server=%s action=start", server_id)
         return {"ok": True, "state": backend._server_state(process)}
 
+    @app.post("/api/v1/servers/{server_id}/start")
+    async def api_v1_start(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        backend._get_server_or_404(server_id)
+        lock = _acquire_action_lock_or_raise(server_id)
+        try:
+            process = manager.processes[server_id]
+            state = backend._server_state(process)
+            if state in {"RUNNING", "STARTING"}:
+                return _v1_success(status=state.lower())
+            try:
+                manager.start(server_id)
+            except Exception:
+                raise HTTPException(status_code=400, detail="start_failed")
+            logger.info("Web API v1 action: server=%s action=start", server_id)
+            return _v1_success(status=backend._server_state(process).lower())
+        finally:
+            lock.release()
+
     @app.post("/api/servers/{server_id}/stop")
     async def api_stop(server_id: str, request: Request, session: _Session = Depends(_require_auth)):
         backend._require_csrf(request, session)
@@ -437,6 +535,22 @@ def create_web_app(
         logger.info("Web action: server=%s action=stop", server_id)
         return {"ok": True, "state": backend._server_state(process)}
 
+    @app.post("/api/v1/servers/{server_id}/stop")
+    async def api_v1_stop(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        backend._get_server_or_404(server_id)
+        lock = _acquire_action_lock_or_raise(server_id)
+        try:
+            process = manager.processes[server_id]
+            state = backend._server_state(process)
+            if state in {"STOPPED", "STOPPING"}:
+                return _v1_success(status=state.lower())
+            manager.stop(server_id)
+            logger.info("Web API v1 action: server=%s action=stop", server_id)
+            return _v1_success(status=backend._server_state(process).lower())
+        finally:
+            lock.release()
+
     @app.post("/api/servers/{server_id}/restart")
     async def api_restart(server_id: str, request: Request, session: _Session = Depends(_require_auth)):
         backend._require_csrf(request, session)
@@ -447,6 +561,21 @@ def create_web_app(
             raise HTTPException(status_code=400, detail="restart_failed")
         logger.info("Web action: server=%s action=restart", server_id)
         return {"ok": True, "state": backend._server_state(manager.processes[server_id])}
+
+    @app.post("/api/v1/servers/{server_id}/restart")
+    async def api_v1_restart(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        backend._get_server_or_404(server_id)
+        lock = _acquire_action_lock_or_raise(server_id)
+        try:
+            try:
+                manager.restart(server_id)
+            except Exception:
+                raise HTTPException(status_code=400, detail="restart_failed")
+            logger.info("Web API v1 action: server=%s action=restart", server_id)
+            return _v1_success(status=backend._server_state(manager.processes[server_id]).lower())
+        finally:
+            lock.release()
 
     @app.get("/api/servers/{server_id}/logs")
     async def api_logs(server_id: str, cursor: int = 0, limit: int = 200, _session: _Session = Depends(_require_auth)):
@@ -463,5 +592,21 @@ def create_web_app(
         if len(lines) > 500:
             lines = lines[-500:]
         return {"server_id": server_id, "lines": lines, "cursor": total}
+
+    @app.get("/api/v1/servers/{server_id}/logs")
+    async def api_v1_logs(server_id: str, cursor: int = 0, limit: int = 200, _access: _AccessContext = Depends(_require_v1_access)):
+        _, process = backend._get_server_or_404(server_id)
+        all_lines = [backend._sanitize_line(line) for line in process.recent_output]
+        total = len(all_lines)
+        if cursor <= 0:
+            bounded_limit = max(1, min(limit, 500))
+            lines = all_lines[-bounded_limit:]
+            return _v1_success(server_id=server_id, lines=lines, cursor=total)
+
+        safe_cursor = max(0, min(cursor, total))
+        lines = all_lines[safe_cursor:]
+        if len(lines) > 500:
+            lines = lines[-500:]
+        return _v1_success(server_id=server_id, lines=lines, cursor=total)
 
     return app

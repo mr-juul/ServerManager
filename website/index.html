@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Server Manager Remote Control</title>
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="head">
+      <h1>SERVER MANAGER</h1>
+      <div class="muted">Remote Control</div>
+      <button id="logoutBtn" class="hidden">Logout</button>
+    </header>
+
+    <section id="message" class="card hidden"></section>
+
+    <section id="loginCard" class="card">
+      <h2>Login</h2>
+      <input id="password" type="password" placeholder="Password" />
+      <button id="loginBtn">Login</button>
+    </section>
+
+    <section id="serversCard" class="hidden">
+      <h2>Servers</h2>
+      <div id="servers"></div>
+    </section>
+
+    <section id="logsCard" class="card hidden">
+      <div class="row space">
+        <h2 id="logsTitle">Logs</h2>
+        <button id="closeLogsBtn">Close</button>
+      </div>
+      <pre id="logs"></pre>
+    </section>
+  </main>
+  <script src="/js/app.js" defer></script>
+</body>
+</html>
