@@ -138,10 +138,182 @@ async def servers(_session=Depends(_require_session)):
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
 
+@app.post("/api/servers")
+async def create_server(request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    try:
+        return client.create_server(body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/jobs/{job_id}")
+async def job(job_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_job(job_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
 @app.get("/api/servers/{server_id}")
 async def server(server_id: str, _session=Depends(_require_session)):
     try:
         return client.get_server(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/servers/{server_id}/players")
+async def players(server_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_players(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/servers/{server_id}/settings")
+async def server_settings(server_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_server_settings(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.patch("/api/servers/{server_id}/settings")
+async def patch_server_settings(server_id: str, request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    try:
+        return client.patch_server_settings(server_id, body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/games")
+async def games(_session=Depends(_require_session)):
+    try:
+        return client.get_games()
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/games/{game_id}")
+async def game(game_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_game(game_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/games/{game_id}/create-schema")
+async def create_schema(game_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_create_schema(game_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/games/{game_id}/worlds")
+async def worlds(game_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_worlds(game_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/mods")
+async def mods(game: str = "", _session=Depends(_require_session)):
+    try:
+        return client.get_mods(game=game)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/mods/{mod_id}")
+async def mod(mod_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_mod(mod_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/servers/{server_id}/mods")
+async def server_mods(server_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_server_mods(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/mods/{mod_id}/enable")
+async def enable_mod(server_id: str, mod_id: str, _session=Depends(_require_session)):
+    try:
+        return client.enable_mod(server_id, mod_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/mods/{mod_id}/disable")
+async def disable_mod(server_id: str, mod_id: str, _session=Depends(_require_session)):
+    try:
+        return client.disable_mod(server_id, mod_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/mods/{mod_id}/install")
+async def install_mod(server_id: str, mod_id: str, _session=Depends(_require_session)):
+    try:
+        return client.install_mod(server_id, mod_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/mods/{mod_id}/uninstall")
+async def uninstall_mod(server_id: str, mod_id: str, _session=Depends(_require_session)):
+    try:
+        return client.uninstall_mod(server_id, mod_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/mod-profiles")
+async def mod_profiles(game: str = "", _session=Depends(_require_session)):
+    try:
+        return client.get_mod_profiles(game=game)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/mod-profile")
+async def apply_mod_profile(server_id: str, request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    profile = str((body or {}).get("profile") or "")
+    try:
+        return client.apply_mod_profile(server_id, profile)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/servers/{server_id}/backups")
+async def backups(server_id: str, _session=Depends(_require_session)):
+    try:
+        return client.get_backups(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/backups")
+async def create_backup(server_id: str, _session=Depends(_require_session)):
+    try:
+        return client.create_backup(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/backups/{backup_id}/restore")
+async def restore_backup(server_id: str, backup_id: str, _session=Depends(_require_session)):
+    try:
+        return client.restore_backup(server_id, backup_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 

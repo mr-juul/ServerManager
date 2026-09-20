@@ -117,6 +117,8 @@ class AppSettings:
     web_control_password_hash: str = ""
     web_control_https_cert: str = ""
     web_control_https_key: str = ""
+    external_web_port: int = 8090
+    web_control_api_key: str = ""
     watchdog_max_restarts: int = 5
     watchdog_window_minutes: int = 5
     watchdog_restart_delay_seconds: int = 5
@@ -268,6 +270,8 @@ class ConfigStore:
             web_control_password_hash=str(settings_raw.get("web_control_password_hash", "")),
             web_control_https_cert=str(settings_raw.get("web_control_https_cert", "")),
             web_control_https_key=str(settings_raw.get("web_control_https_key", "")),
+            external_web_port=max(1, min(65535, int(settings_raw.get("external_web_port", 8090)))),
+            web_control_api_key=str(settings_raw.get("web_control_api_key", "")),
             watchdog_max_restarts=max(1, int(settings_raw.get("watchdog_max_restarts", 5))),
             watchdog_window_minutes=max(1, int(settings_raw.get("watchdog_window_minutes", 5))),
             watchdog_restart_delay_seconds=max(1, int(settings_raw.get("watchdog_restart_delay_seconds", 5))),

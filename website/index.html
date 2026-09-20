@@ -16,6 +16,15 @@
 
     <section id="message" class="card hidden"></section>
 
+    <section id="navCard" class="card hidden">
+      <div class="row">
+        <button id="navServersBtn" class="small">Servers</button>
+        <button id="navPlayersBtn" class="small">Players</button>
+        <button id="navModsBtn" class="small">Mods</button>
+        <button id="navBackupsBtn" class="small">Backups</button>
+      </div>
+    </section>
+
     <section id="loginCard" class="card">
       <h2>Login</h2>
       <input id="password" type="password" placeholder="Password" />
@@ -23,8 +32,46 @@
     </section>
 
     <section id="serversCard" class="hidden">
-      <h2>Servers</h2>
+      <div class="row space">
+        <h2>Servers</h2>
+        <button id="newServerBtn" class="small">+ New Server</button>
+      </div>
       <div id="servers"></div>
+    </section>
+
+    <section id="modsCard" class="card hidden">
+      <h2>Mods</h2>
+      <div id="mods"></div>
+    </section>
+
+    <section id="playersCard" class="card hidden">
+      <h2>Players</h2>
+      <div id="players"></div>
+    </section>
+
+    <section id="backupsCard" class="card hidden">
+      <h2>Backups</h2>
+      <div id="backups"></div>
+    </section>
+
+    <section id="createCard" class="card hidden">
+      <div class="row space">
+        <h2>Create Server</h2>
+        <button id="closeCreateBtn" class="small">Close</button>
+      </div>
+      <div id="createHint" class="muted"></div>
+      <div id="createFormHost"></div>
+      <button id="createSubmitBtn">Create Server</button>
+    </section>
+
+    <section id="settingsCard" class="card hidden">
+      <div class="row space">
+        <h2 id="settingsTitle">Server Settings</h2>
+        <button id="closeSettingsBtn" class="small">Close</button>
+      </div>
+      <div id="settingsHint" class="muted"></div>
+      <div id="settingsFormHost"></div>
+      <button id="settingsSaveBtn">Save Settings</button>
     </section>
 
     <section id="logsCard" class="card hidden">

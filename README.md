@@ -69,12 +69,44 @@ Server Manager now provides a narrow versioned API for external remote-control w
 Available endpoints:
 
 - GET /api/v1/status
+- GET /api/v1/games
+- GET /api/v1/games/{game_id}
+- GET /api/v1/games/{game_id}/create-schema
+- GET /api/v1/games/{game_id}/worlds
 - GET /api/v1/servers
 - GET /api/v1/servers/{server_id}
+- POST /api/v1/servers
+- GET /api/v1/jobs/{job_id}
 - POST /api/v1/servers/{server_id}/start
 - POST /api/v1/servers/{server_id}/stop
 - POST /api/v1/servers/{server_id}/restart
 - GET /api/v1/servers/{server_id}/logs
+- GET /api/v1/servers/{server_id}/players
+- GET /api/v1/servers/{server_id}/settings
+- PATCH /api/v1/servers/{server_id}/settings
+- GET /api/v1/mods
+- GET /api/v1/mods/{mod_id}
+- GET /api/v1/servers/{server_id}/mods
+- POST /api/v1/servers/{server_id}/mods/{mod_id}/enable
+- POST /api/v1/servers/{server_id}/mods/{mod_id}/disable
+- POST /api/v1/servers/{server_id}/mods/{mod_id}/install
+- POST /api/v1/servers/{server_id}/mods/{mod_id}/uninstall
+- GET /api/v1/mod-profiles
+- POST /api/v1/servers/{server_id}/mod-profile
+- GET /api/v1/servers/{server_id}/backups
+- POST /api/v1/servers/{server_id}/backups
+- POST /api/v1/servers/{server_id}/backups/{backup_id}/restore
+
+Response details:
+
+- `GET /api/v1/servers/{id}/settings` also returns `field_schema` so website labels/types can be game-specific.
+- `GET /api/v1/servers/{id}/backups` also returns `restore_history` for recent restore events.
+  - restore history items include `status`, `error`, and optional `safety_backup_id`.
+
+Website UI notes:
+
+- Navigation includes `Servers`, `Players`, `Mods`, and `Backups`.
+- `Players` view is server-selectable and only shows safe player information.
 
 Security behavior:
 
@@ -90,6 +122,15 @@ This repository includes separate components:
 - Website frontend: [website/index.html](website/index.html)
 - Website backend: [website_backend/app.py](website_backend/app.py)
 - Server Manager API client for backend: [website_backend/server_manager_client.py](website_backend/server_manager_client.py)
+
+Desktop one-click option:
+
+- In `Indstillinger`, under `EKSTERN REMOTE SIDE`, use:
+  - `START REMOTE SIDE`
+  - `ÅBN REMOTE SIDE`
+  - `STOP REMOTE SIDE`
+
+Server Manager will generate/store an API key automatically and wire backend environment values for you.
 
 ### Run external website backend
 
@@ -111,7 +152,7 @@ Then open:
 http://<server-ip>:8090
 ```
 
-The website stays a thin remote control: login, list servers, start, stop, restart, and logs.
+The website stays a thin remote control: login, list servers, start, stop, restart, logs, and create server for games where `create_server` capability is true.
 
 ## Public internet access (simple)
 

@@ -22,7 +22,7 @@ class FakeProcess:
 
 class FakeManager:
     def __init__(self):
-        cfg = ServerConfig(id="valheim-kirken", name="Kirken", script="a.bat", working_directory="C:/", game="valheim")
+        cfg = ServerConfig(id="valheim-kirken", name="Kirken", script="a.bat", working_directory="C:/", game="valheim", executable_directory="C:/")
         self.configs = {cfg.id: cfg}
         self.processes = {cfg.id: FakeProcess()}
         self.started = 0
@@ -40,6 +40,9 @@ class FakeManager:
     def restart(self, server_id: str):
         self.restarted += 1
         self.processes[server_id].status = ServerStatus.ONLINE
+
+    def _create_process(self, _config: ServerConfig):
+        return FakeProcess()
 
 
 def _client(configured: bool = True) -> tuple[TestClient, FakeManager]:
@@ -210,3 +213,142 @@ def test_v1_unknown_server_returns_structured_error(monkeypatch):
     payload = response.json()
     assert payload["success"] is False
     assert payload["error"] == "server_not_found"
+
+
+def test_v1_games_catalog(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, _ = _client()
+    response = client.get("/api/v1/games", headers={"X-API-Key": "abc123"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert any(game["id"] == "valheim" for game in payload["games"])
+
+
+def test_v1_create_schema_for_valheim(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, _ = _client()
+    response = client.get("/api/v1/games/valheim/create-schema", headers={"X-API-Key": "abc123"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["schema"]["supported"] is True
+    assert any(field["id"] == "name" for field in payload["schema"]["fields"])
+
+
+def test_v1_create_server_from_web(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    install = tmp_path / "valheim"
+    install.mkdir()
+    (install / "valheim_server.exe").write_text("", encoding="utf-8")
+
+    client, manager = _client()
+    manager.configs["valheim-kirken"].executable_directory = str(install)
+    app = create_web_app(AppSettings(web_control_enabled=True, web_control_port=8080, web_control_bind_address="127.0.0.1"), manager, type("L", (), {"info": lambda *a, **k: None, "warning": lambda *a, **k: None, "exception": lambda *a, **k: None})(), app_root=tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/servers",
+        json={"game": "valheim", "name": "New Kirken", "password": "secret123", "world_mode": "new"},
+        headers={"X-API-Key": "abc123"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["job_id"]
+
+    job_response = client.get(f"/api/v1/jobs/{payload['job_id']}", headers={"X-API-Key": "abc123"})
+    assert job_response.status_code == 200
+    job_payload = job_response.json()["job"]
+    assert job_payload["status"] in {"QUEUED", "RUNNING", "COMPLETED"}
+
+    for _ in range(30):
+        job_response = client.get(f"/api/v1/jobs/{payload['job_id']}", headers={"X-API-Key": "abc123"})
+        assert job_response.status_code == 200
+        job_payload = job_response.json()["job"]
+        if job_payload["status"] == "COMPLETED":
+            break
+    assert job_payload["status"] == "COMPLETED"
+    assert job_payload["result"]["server"]["game"] == "valheim"
+    assert len(manager.configs) >= 2
+
+
+def test_v1_players_endpoint(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, manager = _client()
+    manager.processes["valheim-kirken"].recent_output.extend([
+        "2 / 10 players",
+        "Player Oscar connected",
+        "Player Player2 connected",
+    ])
+    response = client.get("/api/v1/servers/valheim-kirken/players", headers={"X-API-Key": "abc123"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["supported"] is True
+    assert payload["online"] >= 0
+    assert payload["max"] in {None, 10}
+
+
+def test_v1_patch_settings(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, manager = _client()
+    response = client.patch(
+        "/api/v1/servers/valheim-kirken/settings",
+        json={"name": "Kirken New", "public": False, "crossplay": False},
+        headers={"X-API-Key": "abc123"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert manager.configs["valheim-kirken"].name == "Kirken New"
+    assert manager.configs["valheim-kirken"].public is False
+    assert manager.configs["valheim-kirken"].crossplay is False
+
+
+def test_v1_settings_returns_field_schema(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, _ = _client()
+    response = client.get("/api/v1/servers/valheim-kirken/settings", headers={"X-API-Key": "abc123"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert "field_schema" in payload
+    assert any(field["id"] == "name" for field in payload["field_schema"])
+
+
+def test_v1_backups_includes_restore_history(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, _ = _client()
+    response = client.get("/api/v1/servers/valheim-kirken/backups", headers={"X-API-Key": "abc123"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert "restore_history" in payload
+
+
+def test_v1_restore_job_failure_creates_history_event(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, _ = _client()
+    response = client.post(
+        "/api/v1/servers/valheim-kirken/backups/not-found.tar.zst/restore",
+        json={},
+        headers={"X-API-Key": "abc123"},
+    )
+    assert response.status_code == 200
+    job_id = response.json().get("job_id")
+    assert job_id
+
+    for _ in range(30):
+        job_response = client.get(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": "abc123"})
+        assert job_response.status_code == 200
+        job = job_response.json()["job"]
+        if job["status"] in {"COMPLETED", "FAILED"}:
+            break
+    assert job["status"] == "FAILED"
+
+    backups_response = client.get("/api/v1/servers/valheim-kirken/backups", headers={"X-API-Key": "abc123"})
+    assert backups_response.status_code == 200
+    history = backups_response.json().get("restore_history", [])
+    assert history
+    assert history[0].get("status") in {"failed", "completed"}

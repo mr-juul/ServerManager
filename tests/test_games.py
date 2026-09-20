@@ -1,5 +1,5 @@
 from core.game_detection import detect_game
-from core.games import game_definition
+from core.games import game_definition, game_public_payload
 from core.setup_engine import GameSetupEngine
 
 
@@ -57,3 +57,19 @@ def test_setup_engine_returns_steam_install_target_for_valheim(tmp_path, monkeyp
     fix = engine.fix()
     assert fix["action"] == "steam_install"
     assert fix["target"] == "steam://install/896660"
+
+
+def test_valheim_web_capabilities_expose_supported_actions():
+    payload = game_public_payload(game_definition("valheim"))
+    capabilities = payload["capabilities"]
+    assert capabilities["create_server"] is True
+    assert capabilities["mods"] is True
+    assert capabilities["backups"] is True
+    assert capabilities["logs"] is True
+
+
+def test_unsupported_create_schema_returns_message():
+    schema = game_definition("minecraft-java").web_create_schema()
+    assert schema["supported"] is False
+    assert "fields" in schema
+    assert schema["fields"] == []

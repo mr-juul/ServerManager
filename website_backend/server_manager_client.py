@@ -71,6 +71,12 @@ class ServerManagerClient:
     def get_server(self, server_id: str) -> dict:
         return self._call("GET", f"/api/v1/servers/{server_id}")
 
+    def create_server(self, payload: dict) -> dict:
+        return self._call("POST", "/api/v1/servers", payload=payload)
+
+    def get_job(self, job_id: str) -> dict:
+        return self._call("GET", f"/api/v1/jobs/{job_id}")
+
     def start_server(self, server_id: str) -> dict:
         return self._call("POST", f"/api/v1/servers/{server_id}/start", payload={})
 
@@ -82,3 +88,62 @@ class ServerManagerClient:
 
     def get_logs(self, server_id: str, cursor: int = 0, limit: int = 200) -> dict:
         return self._call("GET", f"/api/v1/servers/{server_id}/logs?cursor={int(cursor)}&limit={int(limit)}")
+
+    def get_players(self, server_id: str) -> dict:
+        return self._call("GET", f"/api/v1/servers/{server_id}/players")
+
+    def get_server_settings(self, server_id: str) -> dict:
+        return self._call("GET", f"/api/v1/servers/{server_id}/settings")
+
+    def patch_server_settings(self, server_id: str, payload: dict) -> dict:
+        return self._call("PATCH", f"/api/v1/servers/{server_id}/settings", payload=payload)
+
+    def get_games(self) -> dict:
+        return self._call("GET", "/api/v1/games")
+
+    def get_game(self, game_id: str) -> dict:
+        return self._call("GET", f"/api/v1/games/{game_id}")
+
+    def get_create_schema(self, game_id: str) -> dict:
+        return self._call("GET", f"/api/v1/games/{game_id}/create-schema")
+
+    def get_worlds(self, game_id: str) -> dict:
+        return self._call("GET", f"/api/v1/games/{game_id}/worlds")
+
+    def get_mods(self, game: str = "") -> dict:
+        suffix = f"?game={game}" if game else ""
+        return self._call("GET", f"/api/v1/mods{suffix}")
+
+    def get_mod(self, mod_id: str) -> dict:
+        return self._call("GET", f"/api/v1/mods/{mod_id}")
+
+    def get_server_mods(self, server_id: str) -> dict:
+        return self._call("GET", f"/api/v1/servers/{server_id}/mods")
+
+    def enable_mod(self, server_id: str, mod_id: str) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/mods/{mod_id}/enable", payload={})
+
+    def disable_mod(self, server_id: str, mod_id: str) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/mods/{mod_id}/disable", payload={})
+
+    def install_mod(self, server_id: str, mod_id: str) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/mods/{mod_id}/install", payload={})
+
+    def uninstall_mod(self, server_id: str, mod_id: str) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/mods/{mod_id}/uninstall", payload={})
+
+    def get_mod_profiles(self, game: str = "") -> dict:
+        suffix = f"?game={game}" if game else ""
+        return self._call("GET", f"/api/v1/mod-profiles{suffix}")
+
+    def apply_mod_profile(self, server_id: str, profile: str) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/mod-profile", payload={"profile": profile})
+
+    def get_backups(self, server_id: str) -> dict:
+        return self._call("GET", f"/api/v1/servers/{server_id}/backups")
+
+    def create_backup(self, server_id: str) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/backups", payload={})
+
+    def restore_backup(self, server_id: str, backup_id: str) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/backups/{backup_id}/restore", payload={})

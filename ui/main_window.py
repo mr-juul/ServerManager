@@ -375,6 +375,8 @@ class SettingsDialog(QDialog):
             web_control_password_hash=self._password_hash,
             web_control_https_cert=cert_value,
             web_control_https_key=key_value,
+            external_web_port=self._settings.external_web_port,
+            web_control_api_key=self._settings.web_control_api_key,
             watchdog_max_restarts=self._settings.watchdog_max_restarts,
             watchdog_window_minutes=self._settings.watchdog_window_minutes,
             watchdog_restart_delay_seconds=self._settings.watchdog_restart_delay_seconds,
@@ -894,7 +896,7 @@ class GameCard(QWidget):
 
 class MainWindow(QMainWindow):
     def __init__(self, settings, servers, log_root, logger, app_root: Path | None = None, startup_reason: str = "normal", install_root: Path | None = None):
-        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.install_root = install_root or Path(sys.executable).resolve().parent; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.mod_manager = ModManager(self.app_root, self.logger); self.game_statuses = {}; self._latest_release = None; self._startup_enabled = False; self.web_control = WebControlService(self.settings, self.manager, self.logger, self._save_configuration, self.install_root / "site" / "webcontrol"); self.bridge.update_available.connect(self._notify_update); self.bridge.update_none.connect(self._notify_no_update); self.bridge.update_error.connect(self._notify_update_error); self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games(); self.manager.reattach_existing_processes(); self._refresh_startup_state();
+        super().__init__(); self.settings = settings; self.log_root = log_root; self.app_root = app_root or Path(__file__).resolve().parents[1]; self.install_root = install_root or Path(sys.executable).resolve().parent; self.startup_reason = startup_reason; self.logger = logger; self.game_profiles = GameProfileStore(self.app_root / "config" / "games.json").load(); self.bridge = EventBridge(); self.manager = ServerManager(servers, log_root, self._status_event, self._output_event, logger); self.mod_manager = ModManager(self.app_root, self.logger); self.game_statuses = {}; self._latest_release = None; self._startup_enabled = False; self.web_control = WebControlService(self.settings, self.manager, self.logger, self._save_configuration, self.install_root / "site" / "webcontrol", self.app_root); self.external_site_server = None; self.external_site_thread = None; self.external_site_last_error = ""; self.bridge.update_available.connect(self._notify_update); self.bridge.update_none.connect(self._notify_no_update); self.bridge.update_error.connect(self._notify_update_error); self.setWindowTitle("Server Manager"); self.resize(1050, 720); self._build_ui(); self._build_tray(); self._build_menu(); self._rescan_games(); self.manager.reattach_existing_processes(); self._refresh_startup_state();
         self.system_timer = QTimer(self); self.system_timer.timeout.connect(self.update_system); self.system_timer.start(settings.refresh_interval_seconds * 1000); self.update_system()
         self._apply_web_control_settings()
         if self.settings.automatic_update_checks and self.settings.update_check_frequency == "startup": self.check_updates(background=True)
@@ -909,7 +911,83 @@ class MainWindow(QMainWindow):
     def _build_mods_page(self):
         page = QWidget(); layout = QVBoxLayout(page); header = QHBoxLayout(); title = QLabel("MOD LIBRARY"); title.setObjectName("pageTitle"); header.addWidget(title); add = QPushButton("+ Add mod"); add.clicked.connect(self.import_mod_to_library); header.addWidget(add); layout.addLayout(header); self.mod_search = QLineEdit(); self.mod_search.setPlaceholderText("Search mods..."); self.mod_search.textChanged.connect(self._render_mod_library); layout.addWidget(self.mod_search); scroll = QScrollArea(); scroll.setWidgetResizable(True); self.mod_container = QWidget(); self.mod_layout = QVBoxLayout(self.mod_container); scroll.setWidget(self.mod_container); layout.addWidget(scroll); self._render_mod_library(); return page
     def _build_settings_page(self):
-        page = QWidget(); layout = QVBoxLayout(page); title = QLabel("INDSTILLINGER"); title.setObjectName("pageTitle"); layout.addWidget(title); button = QPushButton("ÅBN INDSTILLINGER"); button.clicked.connect(self.edit_settings); layout.addWidget(button); self.version_label = QLabel(f"Nuværende version: {APP_VERSION}"); self.latest_label = QLabel("Seneste version: ukendt"); layout.addWidget(self.version_label); layout.addWidget(self.latest_label); updates = QPushButton("TJEK FOR OPDATERINGER"); updates.clicked.connect(lambda: self.check_updates(background=False)); layout.addWidget(updates); web_group = QGroupBox("WEB CONTROL"); web_layout = QFormLayout(web_group); self.web_status_label = QLabel("Ikke aktiv"); self.web_url_label = QLabel("-"); self.web_error_label = QLabel("-"); self.web_https_label = QLabel("Ikke konfigureret"); self.web_exposure_label = QLabel("Automatisk"); self.web_password_label = QLabel("Ikke konfigureret"); open_web = QPushButton("ÅBN WEB CONTROL"); open_web.clicked.connect(self.open_web_control); enable_web = QPushButton("AKTIVER WEB CONTROL"); enable_web.clicked.connect(self.enable_web_control_simple); disable_web = QPushButton("DEAKTIVER WEB CONTROL"); disable_web.clicked.connect(self.disable_web_control_simple); change_web_password = QPushButton("SKIFT WEB-PASSWORD"); change_web_password.clicked.connect(self.change_web_control_password_simple); public_guide = QPushButton("GUIDE: OFFENTLIG ADGANG"); public_guide.clicked.connect(self.open_public_web_access_guide); restart_web = QPushButton("GENSTART WEB CONTROL"); restart_web.clicked.connect(self.restart_web_control); diagnostics_web = QPushButton("WEB DIAGNOSTIK"); diagnostics_web.clicked.connect(self.show_web_control_diagnostics); web_layout.addRow("Status", self.web_status_label); web_layout.addRow("Web-adresse", self.web_url_label); web_layout.addRow("Password", self.web_password_label); web_layout.addRow("Sikkerhed", self.web_https_label); web_layout.addRow("Netværk", self.web_exposure_label); web_layout.addRow("Fejl", self.web_error_label); web_layout.addRow(open_web); web_layout.addRow(enable_web); web_layout.addRow(change_web_password); web_layout.addRow(disable_web); web_layout.addRow(public_guide); web_layout.addRow(restart_web); web_layout.addRow(diagnostics_web); layout.addWidget(web_group); layout.addStretch(); return page
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        title = QLabel("INDSTILLINGER")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+
+        button = QPushButton("ÅBN INDSTILLINGER")
+        button.clicked.connect(self.edit_settings)
+        layout.addWidget(button)
+
+        self.version_label = QLabel(f"Nuværende version: {APP_VERSION}")
+        self.latest_label = QLabel("Seneste version: ukendt")
+        layout.addWidget(self.version_label)
+        layout.addWidget(self.latest_label)
+
+        updates = QPushButton("TJEK FOR OPDATERINGER")
+        updates.clicked.connect(lambda: self.check_updates(background=False))
+        layout.addWidget(updates)
+
+        web_group = QGroupBox("WEB CONTROL")
+        web_layout = QFormLayout(web_group)
+        self.web_status_label = QLabel("Ikke aktiv")
+        self.web_url_label = QLabel("-")
+        self.web_error_label = QLabel("-")
+        self.web_https_label = QLabel("Ikke konfigureret")
+        self.web_exposure_label = QLabel("Automatisk")
+        self.web_password_label = QLabel("Ikke konfigureret")
+
+        open_web = QPushButton("ÅBN WEB CONTROL")
+        open_web.clicked.connect(self.open_web_control)
+        enable_web = QPushButton("AKTIVER WEB CONTROL")
+        enable_web.clicked.connect(self.enable_web_control_simple)
+        disable_web = QPushButton("DEAKTIVER WEB CONTROL")
+        disable_web.clicked.connect(self.disable_web_control_simple)
+        change_web_password = QPushButton("SKIFT WEB-PASSWORD")
+        change_web_password.clicked.connect(self.change_web_control_password_simple)
+        public_guide = QPushButton("GUIDE: OFFENTLIG ADGANG")
+        public_guide.clicked.connect(self.open_public_web_access_guide)
+        restart_web = QPushButton("GENSTART WEB CONTROL")
+        restart_web.clicked.connect(self.restart_web_control)
+        diagnostics_web = QPushButton("WEB DIAGNOSTIK")
+        diagnostics_web.clicked.connect(self.show_web_control_diagnostics)
+
+        web_layout.addRow("Status", self.web_status_label)
+        web_layout.addRow("Web-adresse", self.web_url_label)
+        web_layout.addRow("Password", self.web_password_label)
+        web_layout.addRow("Sikkerhed", self.web_https_label)
+        web_layout.addRow("Netværk", self.web_exposure_label)
+        web_layout.addRow("Fejl", self.web_error_label)
+        web_layout.addRow(open_web)
+        web_layout.addRow(enable_web)
+        web_layout.addRow(change_web_password)
+        web_layout.addRow(disable_web)
+        web_layout.addRow(public_guide)
+        web_layout.addRow(restart_web)
+        web_layout.addRow(diagnostics_web)
+        layout.addWidget(web_group)
+
+        external_group = QGroupBox("EKSTERN REMOTE SIDE")
+        external_layout = QFormLayout(external_group)
+        self.external_site_status_label = QLabel("Ikke startet")
+        self.external_site_url_label = QLabel("-")
+        start_external = QPushButton("START REMOTE SIDE")
+        start_external.clicked.connect(self.start_external_remote_site)
+        open_external = QPushButton("ÅBN REMOTE SIDE")
+        open_external.clicked.connect(self.open_external_remote_site)
+        stop_external = QPushButton("STOP REMOTE SIDE")
+        stop_external.clicked.connect(self.stop_external_remote_site)
+        external_layout.addRow("Status", self.external_site_status_label)
+        external_layout.addRow("Adresse", self.external_site_url_label)
+        external_layout.addRow(start_external)
+        external_layout.addRow(open_external)
+        external_layout.addRow(stop_external)
+        layout.addWidget(external_group)
+
+        layout.addStretch()
+        return page
 
     def _rebuild_servers(self):
         while self.server_layout.count():
@@ -1218,6 +1296,80 @@ class MainWindow(QMainWindow):
         self._save_configuration()
         self._apply_web_control_settings()
 
+    def _ensure_web_api_key(self) -> str:
+        key = str(self.settings.web_control_api_key or "").strip()
+        if not key:
+            key = f"sm-{uuid.uuid4().hex}{uuid.uuid4().hex}"
+            self.settings.web_control_api_key = key
+            self._save_configuration()
+        os.environ["SERVER_MANAGER_API_KEY"] = key
+        return key
+
+    def _external_site_url(self) -> str:
+        return f"http://{self.web_control.local_ip()}:{int(self.settings.external_web_port)}"
+
+    def start_external_remote_site(self):
+        if not self.settings.web_control_enabled:
+            self.enable_web_control_simple()
+            if not self.settings.web_control_enabled:
+                return
+
+        if self.external_site_thread is not None and self.external_site_thread.is_alive():
+            self._refresh_web_control_status()
+            return
+
+        key = self._ensure_web_api_key()
+        os.environ["SM_API_KEY"] = key
+        os.environ["SM_API_BASE_URL"] = f"http://127.0.0.1:{int(self.settings.web_control_port)}"
+
+        try:
+            import importlib
+            import uvicorn
+            import website_backend.app as external_app
+
+            external_app = importlib.reload(external_app)
+            config = uvicorn.Config(
+                app=external_app.app,
+                host="0.0.0.0",
+                port=int(self.settings.external_web_port),
+                log_level="warning",
+                access_log=False,
+                lifespan="off",
+                log_config=None,
+            )
+            self.external_site_server = uvicorn.Server(config)
+            self.external_site_last_error = ""
+
+            def _run_external_site() -> None:
+                try:
+                    self.external_site_server.run()
+                except Exception as exc:
+                    self.external_site_last_error = str(exc)
+                    self.logger.exception("External remote site crashed")
+
+            self.external_site_thread = threading.Thread(target=_run_external_site, daemon=True, name="external-remote-site")
+            self.external_site_thread.start()
+            self._refresh_web_control_status()
+            QMessageBox.information(self, "Remote side", f"Remote side startet på:\n{self._external_site_url()}")
+        except Exception as exc:
+            QMessageBox.warning(self, "Remote side", f"Kunne ikke starte remote side: {exc}")
+
+    def stop_external_remote_site(self):
+        if self.external_site_server is not None:
+            self.external_site_server.should_exit = True
+        if self.external_site_thread is not None and self.external_site_thread.is_alive():
+            self.external_site_thread.join(timeout=3)
+        self.external_site_server = None
+        self.external_site_thread = None
+        self._refresh_web_control_status()
+
+    def open_external_remote_site(self):
+        if self.external_site_thread is None or not self.external_site_thread.is_alive():
+            self.start_external_remote_site()
+        url = self._external_site_url()
+        if not webbrowser.open(url):
+            QMessageBox.information(self, "Remote side", f"Åbn manuelt:\n\n{url}")
+
     def open_public_web_access_guide(self):
         local_ip = self.web_control.local_ip()
         dialog = PublicWebAccessDialog(local_ip, int(self.settings.web_control_port), self)
@@ -1303,6 +1455,15 @@ class MainWindow(QMainWindow):
             self.web_status_label.setText("Ikke tilgængelig")
             self.web_url_label.setText("-")
             self.web_error_label.setText(self.web_control.last_error or "Ukendt fejl")
+
+        if hasattr(self, "external_site_status_label"):
+            running = self.external_site_thread is not None and self.external_site_thread.is_alive()
+            if running:
+                self.external_site_status_label.setText("Kører")
+                self.external_site_url_label.setText(self._external_site_url())
+            else:
+                self.external_site_status_label.setText("Ikke startet")
+                self.external_site_url_label.setText("-")
 
     def open_web_control(self):
         if not self.web_control.is_running:
@@ -1421,6 +1582,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_scan_thread") and self._scan_thread.isRunning():
             self._scan_thread.quit()
             self._scan_thread.wait(2000)
+        self.stop_external_remote_site()
         self.web_control.stop()
         self.manager.shutdown(); self.tray.hide(); event.accept()
 
@@ -1430,6 +1592,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_scan_thread") and self._scan_thread.isRunning():
             self._scan_thread.quit()
             self._scan_thread.wait(2000)
+        self.stop_external_remote_site()
         self.web_control.stop()
         self.manager.shutdown(); self.tray.hide(); QApplication.instance().quit()
 
