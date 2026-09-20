@@ -68,8 +68,14 @@ def test_valheim_web_capabilities_expose_supported_actions():
     assert capabilities["logs"] is True
 
 
-def test_unsupported_create_schema_returns_message():
+def test_minecraft_create_schema_is_supported():
     schema = game_definition("minecraft-java").web_create_schema()
-    assert schema["supported"] is False
+    assert schema["supported"] is True
     assert "fields" in schema
-    assert schema["fields"] == []
+    assert any(field["id"] == "name" for field in schema["fields"])
+
+
+def test_terraria_create_schema_is_supported():
+    schema = game_definition("terraria").web_create_schema()
+    assert schema["supported"] is True
+    assert any(field["id"] == "name" for field in schema["fields"])

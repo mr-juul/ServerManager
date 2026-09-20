@@ -336,7 +336,93 @@ class _WebControlBackend:
         return self.manager.configs[server_id], self.manager.processes[server_id]
 
     def _games_payload(self) -> list[dict[str, Any]]:
-        return [game_public_payload(definition) for definition in game_choices()]
+        payloads: list[dict[str, Any]] = []
+        for definition in game_choices():
+            status = self._game_status(definition.id)
+            capabilities = definition.web_capabilities().copy()
+            capabilities["create_server"] = self._can_web_create(definition.id)
+            item = game_public_payload(definition)
+            item["capabilities"] = capabilities
+            item["status"] = status.state
+            payloads.append(item)
+        return payloads
+
+    def _game_status(self, game_id: str):
+        definition = game_definition(game_id)
+        configured_paths: list[Path] = []
+        for config in self.manager.configs.values():
+            if config.game != game_id:
+                continue
+            location = str(config.executable_directory or "").strip()
+            if location:
+                configured_paths.append(Path(location))
+        return detect_game(definition, configured_paths)
+
+    def _can_web_create(self, game_id: str) -> bool:
+        definition = game_definition(game_id)
+        if not definition.supported:
+            return False
+        if definition.web_create_supported:
+            return True
+        if not definition.server_search_names:
+            return False
+        status = self._game_status(game_id)
+        return status.state == "READY"
+
+    def _create_schema_payload(self, game_id: str) -> dict[str, Any]:
+        definition = game_definition(game_id)
+        if definition.id != game_id:
+            raise HTTPException(status_code=404, detail="game_not_found")
+
+        schema = definition.web_create_schema()
+        if schema.get("supported"):
+            return schema
+
+        if not self._can_web_create(game_id):
+            return schema
+
+        fields: list[dict[str, Any]] = [
+            {
+                "id": "name",
+                "type": "text",
+                "label": "Server name",
+                "required": True,
+            },
+            {
+                "id": "password",
+                "type": "password",
+                "label": "Password",
+                "required": False,
+            },
+        ]
+        if definition.has_world:
+            fields.extend(
+                [
+                    {
+                        "id": "world_mode",
+                        "type": "select",
+                        "label": "World",
+                        "required": True,
+                        "options": [
+                            {"id": "new", "label": "Create new world"},
+                            {"id": "existing", "label": "Use existing world"},
+                        ],
+                        "default": "new",
+                    },
+                    {
+                        "id": "world",
+                        "type": "world-selector",
+                        "label": "World",
+                        "required": False,
+                    },
+                ]
+            )
+
+        return {
+            "supported": True,
+            "fields": fields,
+            "editable_fields": definition.web_editable_fields(),
+        }
 
     def _resolve_installation_path(self, game_id: str) -> Path | None:
         for config in self.manager.configs.values():
@@ -356,7 +442,7 @@ class _WebControlBackend:
             raise HTTPException(status_code=400, detail="game_required")
 
         definition = game_definition(game_id)
-        if not definition.web_create_supported:
+        if not self._can_web_create(game_id):
             raise HTTPException(status_code=400, detail="create_not_supported")
 
         name = str(payload.get("name", "")).strip()
@@ -871,14 +957,17 @@ def create_web_app(
         definition = game_definition(game_id)
         if definition.id != game_id:
             raise HTTPException(status_code=404, detail="game_not_found")
-        return _v1_success(game=game_public_payload(definition))
+        status = backend._game_status(game_id)
+        payload = game_public_payload(definition)
+        capabilities = payload.get("capabilities", {}).copy()
+        capabilities["create_server"] = backend._can_web_create(game_id)
+        payload["capabilities"] = capabilities
+        payload["status"] = status.state
+        return _v1_success(game=payload)
 
     @app.get("/api/v1/games/{game_id}/create-schema")
     async def api_v1_create_schema(game_id: str, _access: _AccessContext = Depends(_require_v1_access)):
-        definition = game_definition(game_id)
-        if definition.id != game_id:
-            raise HTTPException(status_code=404, detail="game_not_found")
-        return _v1_success(game_id=game_id, schema=definition.web_create_schema())
+        return _v1_success(game_id=game_id, schema=backend._create_schema_payload(game_id))
 
     @app.get("/api/v1/games/{game_id}/worlds")
     async def api_v1_game_worlds(game_id: str, _access: _AccessContext = Depends(_require_v1_access)):

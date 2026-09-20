@@ -352,3 +352,33 @@ def test_v1_restore_job_failure_creates_history_event(monkeypatch):
     history = backups_response.json().get("restore_history", [])
     assert history
     assert history[0].get("status") in {"failed", "completed"}
+
+
+def test_v1_games_enable_create_for_ready_non_static_game(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    install = tmp_path / "pz"
+    install.mkdir()
+    (install / "StartServer64.bat").write_text("@echo off", encoding="utf-8")
+
+    client, manager = _client()
+    manager.configs["pz-one"] = ServerConfig(
+        id="pz-one",
+        name="PZ",
+        script="C:/pz.bat",
+        working_directory="C:/",
+        game="project-zomboid",
+        executable_directory=str(install),
+    )
+
+    response = client.get("/api/v1/games", headers={"X-API-Key": "abc123"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    pz = next(item for item in payload["games"] if item["id"] == "project-zomboid")
+    assert pz["capabilities"]["create_server"] is True
+
+    schema_response = client.get("/api/v1/games/project-zomboid/create-schema", headers={"X-API-Key": "abc123"})
+    assert schema_response.status_code == 200
+    schema_payload = schema_response.json()
+    assert schema_payload["success"] is True
+    assert schema_payload["schema"]["supported"] is True
