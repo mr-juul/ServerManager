@@ -226,6 +226,7 @@ class _WebControlBackend:
         self.operation_locks: dict[str, threading.Lock] = {}
         self.jobs: dict[str, _Job] = {}
         self.restore_history: dict[str, list[dict[str, Any]]] = {}
+        self.access_audit: list[dict[str, Any]] = []
         self.mod_manager = None
         if app_root:
             try:
@@ -1318,7 +1319,72 @@ def create_web_app(
             logger.exception("Failed to persist provisioned user")
             raise HTTPException(status_code=500, detail="user_store_unavailable") from exc
         logger.info("Web API v1 action: user=%s action=provision", user.user_id)
+        _record_access_event(
+            access,
+            "user_provision",
+            {
+                "user_id": user.user_id,
+                "role": user.role,
+                "active": user.active,
+            },
+        )
         return _v1_success(user=user.to_payload())
+
+    @app.post("/api/v1/users/{user_id}/deactivate")
+    async def api_v1_deactivate_user(user_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_USERS)
+        target = user_id.strip()
+        if not target:
+            raise HTTPException(status_code=400, detail="user_id_required")
+        if target == access.user.user_id:
+            raise HTTPException(status_code=400, detail="cannot_deactivate_self")
+        try:
+            with backend.lock:
+                user = backend.user_manager.set_active(target, False)
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = 404 if detail == "user_not_found" else 400
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+        except UserStoreError as exc:
+            logger.exception("Failed to persist deactivated user")
+            raise HTTPException(status_code=500, detail="user_store_unavailable") from exc
+        _record_access_event(access, "user_deactivate", {"user_id": user.user_id})
+        return _v1_success(user=user.to_payload())
+
+    @app.post("/api/v1/users/{user_id}/activate")
+    async def api_v1_activate_user(user_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_USERS)
+        target = user_id.strip()
+        if not target:
+            raise HTTPException(status_code=400, detail="user_id_required")
+        try:
+            with backend.lock:
+                user = backend.user_manager.set_active(target, True)
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = 404 if detail == "user_not_found" else 400
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+        except UserStoreError as exc:
+            logger.exception("Failed to persist activated user")
+            raise HTTPException(status_code=500, detail="user_store_unavailable") from exc
+        _record_access_event(access, "user_activate", {"user_id": user.user_id})
+        return _v1_success(user=user.to_payload())
+
+    @app.get("/api/v1/access-matrix")
+    async def api_v1_access_matrix(access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(access, PERMISSION_VIEW_USERS)
+        _require_permission(access, PERMISSION_VIEW_SERVERS)
+        return _v1_success(**_access_matrix_payload(access))
+
+    @app.get("/api/v1/access-audit")
+    async def api_v1_access_audit(access: _AccessContext = Depends(_require_v1_access), limit: int = 50):
+        _require_permission(access, PERMISSION_VIEW_USERS)
+        bounded_limit = max(1, min(int(limit or 50), 200))
+        with backend.lock:
+            rows = list(backend.access_audit[:bounded_limit])
+        return _v1_success(events=rows)
 
     @app.post("/api/v1/invitations")
     async def api_v1_invitations(request: Request, access: _AccessContext = Depends(_require_v1_access)):
@@ -1616,6 +1682,35 @@ def create_web_app(
     def _access_payload(server_id: str, config) -> dict[str, Any]:
         return {"server_id": server_id, "owner_id": config.owner_id, "shared_with": list(config.shared_with)}
 
+    def _record_access_event(access: _AccessContext, action: str, payload: dict[str, Any]) -> None:
+        event = {
+            "id": secrets.token_urlsafe(8),
+            "action": action,
+            "actor": access.user.user_id,
+            "at": time.time(),
+            "payload": payload,
+        }
+        with backend.lock:
+            backend.access_audit.insert(0, event)
+            del backend.access_audit[200:]
+
+    def _access_matrix_payload(access: _AccessContext) -> dict[str, Any]:
+        visible_ids = _visible_server_ids(access)
+        users = [user.to_payload() for user in backend.user_manager.list_users()]
+        servers = []
+        for server_id in visible_ids:
+            config, _ = backend._get_server_or_404(server_id)
+            servers.append(
+                {
+                    "id": config.id,
+                    "name": config.name,
+                    "owner_id": config.owner_id,
+                    "shared_with": list(config.shared_with),
+                    "can_manage_access": backend.user_manager.is_server_owner(access.user, config),
+                }
+            )
+        return {"users": users, "servers": servers}
+
     async def _access_target(request: Request) -> str:
         try:
             body = await request.json()
@@ -1657,6 +1752,7 @@ def create_web_app(
         if on_settings_changed:
             on_settings_changed()
         logger.info("Web API v1 action: server=%s action=grant_access", server_id)
+        _record_access_event(access, "grant_access", {"server_id": server_id, "user_id": target})
         return _v1_success(**_access_payload(server_id, config))
 
     @app.delete("/api/v1/servers/{server_id}/access/{user_id}")
@@ -1673,6 +1769,7 @@ def create_web_app(
         if on_settings_changed:
             on_settings_changed()
         logger.info("Web API v1 action: server=%s action=revoke_access", server_id)
+        _record_access_event(access, "revoke_access", {"server_id": server_id, "user_id": target})
         return _v1_success(**_access_payload(server_id, config))
 
     @app.get("/api/v1/mods")

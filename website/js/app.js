@@ -360,6 +360,198 @@ async function loadJobs() {
   }).join("");
 }
 
+async function loadUsersCenter() {
+  const host = document.getElementById("usersCenter");
+  const me = currentUser || {};
+  const permissions = Array.isArray(me.permissions) ? me.permissions : [];
+  const canViewUsers = permissions.includes("view_users");
+  const canManageUsers = permissions.includes("manage_users");
+
+  if (!canViewUsers) {
+    host.innerHTML = '<div class="muted">You do not have permission to view users.</div>';
+    return;
+  }
+
+  const [matrixPayload, auditPayload] = await Promise.all([
+    call("/api/access-matrix"),
+    call("/api/access-audit?limit=20").catch(() => ({ events: [] })),
+  ]);
+  const users = Array.isArray(matrixPayload.users) ? matrixPayload.users : [];
+  const servers = Array.isArray(matrixPayload.servers) ? matrixPayload.servers : [];
+  const events = Array.isArray(auditPayload.events) ? auditPayload.events : [];
+
+  const rows = servers.map((server) => {
+    const shared = Array.isArray(server.shared_with) ? server.shared_with : [];
+    const ownerId = String(server.owner_id || "");
+    const canManageAccess = Boolean(server.can_manage_access);
+    const options = users
+      .filter((item) => Boolean(item.active) && String(item.id || "") !== ownerId && !shared.includes(String(item.id || "")))
+      .map((item) => `<option value="${escapeHtml(item.id || "")}">${escapeHtml(item.name || item.id || "")}</option>`)
+      .join("");
+    return `
+      <article class="server">
+        <div><strong>${escapeHtml(server.name || server.id || "Server")}</strong></div>
+        <div class="muted">Owner: ${escapeHtml(ownerId || "-")}</div>
+        <div class="muted">Shared: ${shared.length}</div>
+        <div class="chip-list">
+          ${shared.length ? shared.map((userId) => {
+            const u = users.find((x) => String(x.id || "") === String(userId));
+            const label = u ? `${u.name || u.id} (${u.id})` : userId;
+            return `<span class="chip">${escapeHtml(label)}</span>`;
+          }).join("") : '<span class="muted">No shared users</span>'}
+        </div>
+        ${canManageAccess ? `
+          <div class="row" style="margin-top: 10px;">
+            <select data-grant-select="${escapeHtml(server.id || "")}">
+              <option value="">Select user</option>
+              ${options}
+            </select>
+            <button class="small" data-users-action="grant" data-server-id="${escapeHtml(server.id || "")}">Grant</button>
+          </div>
+          <div class="row" style="margin-top: 8px;">
+            ${shared.map((userId) => `<button class="small" data-users-action="revoke" data-server-id="${escapeHtml(server.id || "")}" data-user-id="${escapeHtml(userId)}">Revoke ${escapeHtml(userId)}</button>`).join("") || ""}
+          </div>
+        ` : '<div class="muted" style="margin-top: 8px;">Read-only for this server.</div>'}
+      </article>
+    `;
+  }).join("");
+
+  host.innerHTML = `
+    ${canManageUsers ? `
+      <div class="invite-row">
+        <h3>Create or reset user</h3>
+        <div class="row">
+          <label class="field" style="flex:1 1 220px;"><span>User ID</span><input id="usersNewId" type="text" maxlength="64" /></label>
+          <label class="field" style="flex:1 1 220px;"><span>Name</span><input id="usersNewName" type="text" maxlength="100" /></label>
+        </div>
+        <div class="row">
+          <label class="field" style="flex:1 1 220px;"><span>Temporary password</span><input id="usersNewPassword" type="password" minlength="8" /></label>
+          <label class="field" style="flex:1 1 220px;"><span>Role</span>
+            <select id="usersNewRole">
+              <option value="MEMBER">Member</option>
+              <option value="ADMIN">Admin</option>
+            </select>
+          </label>
+        </div>
+        <button id="usersCreateBtn" class="small">Create / Reset</button>
+      </div>
+    ` : ""}
+
+    <div class="invite-row">
+      <h3>Users</h3>
+      ${users.map((user) => `
+        <div class="access-user">
+          <span>
+            ${escapeHtml(user.name || user.id || "-")}
+            <span class="muted">(${escapeHtml(user.id || "-")}) ${escapeHtml(String(user.role || "MEMBER").toUpperCase())} ${user.active === false ? "- INACTIVE" : "- ACTIVE"}</span>
+          </span>
+          <span>
+            ${canManageUsers && user.id !== me.id && user.role !== "OWNER" ? `<button class="small" data-users-action="${user.active === false ? "activate" : "deactivate"}" data-user-id="${escapeHtml(user.id || "")}">${user.active === false ? "Activate" : "Deactivate"}</button>` : ""}
+            ${canManageUsers && user.role !== "OWNER" ? `<button class="small" data-users-action="reset-password" data-user-id="${escapeHtml(user.id || "")}" data-user-name="${escapeHtml(user.name || user.id || "")}">Reset password</button>` : ""}
+          </span>
+        </div>
+      `).join("")}
+    </div>
+
+    <div class="invite-row">
+      <h3>Server access matrix</h3>
+      ${rows || '<div class="muted">No servers visible for access management.</div>'}
+    </div>
+
+    <div class="invite-row">
+      <h3>Access audit</h3>
+      ${(events.length ? events.map((event) => `
+        <div class="event-row">
+          <div><strong>${escapeHtml(String(event.action || "event"))}</strong> by ${escapeHtml(event.actor || "-")}</div>
+          <div class="muted">${formatDateTime(event.at)} | ${escapeHtml(JSON.stringify(event.payload || {}))}</div>
+        </div>
+      `).join("") : '<div class="muted">No audit events yet.</div>')}
+    </div>
+  `;
+
+  const createButton = document.getElementById("usersCreateBtn");
+  if (createButton) {
+    createButton.addEventListener("click", async () => {
+      const userId = String(document.getElementById("usersNewId").value || "").trim();
+      const name = String(document.getElementById("usersNewName").value || "").trim();
+      const password = String(document.getElementById("usersNewPassword").value || "");
+      const role = String(document.getElementById("usersNewRole").value || "MEMBER");
+      if (!userId || !password) {
+        showMessage("Enter user ID and temporary password.", true);
+        return;
+      }
+      try {
+        await call("/api/users", { method: "POST", body: JSON.stringify({ user_id: userId, name, password, role }) });
+        showMessage("User created/reset successfully.");
+        await loadUsersCenter();
+      } catch (err) {
+        showMessage(String(err.message || err), true);
+      }
+    });
+  }
+
+  host.querySelectorAll("button[data-users-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = String(button.dataset.usersAction || "");
+      const userId = String(button.dataset.userId || "");
+      const serverId = String(button.dataset.serverId || "");
+      try {
+        if (action === "activate" && userId) {
+          await call(`/api/users/${encodeURIComponent(userId)}/activate`, { method: "POST", body: "{}" });
+          showMessage("User activated.");
+          await loadUsersCenter();
+          return;
+        }
+        if (action === "deactivate" && userId) {
+          await call(`/api/users/${encodeURIComponent(userId)}/deactivate`, { method: "POST", body: "{}" });
+          showMessage("User deactivated.");
+          await loadUsersCenter();
+          return;
+        }
+        if (action === "reset-password" && userId) {
+          const nextPassword = window.prompt(`Enter a temporary password for ${button.dataset.userName || userId}:`);
+          if (nextPassword === null) {
+            return;
+          }
+          if (String(nextPassword).length < 8) {
+            showMessage("Password must be at least 8 characters.", true);
+            return;
+          }
+          await call("/api/users", {
+            method: "POST",
+            body: JSON.stringify({ user_id: userId, password: String(nextPassword) }),
+          });
+          showMessage("Password reset completed.");
+          await loadUsersCenter();
+          return;
+        }
+        if (action === "grant" && serverId) {
+          const select = host.querySelector(`select[data-grant-select="${serverId.replace(/"/g, "&quot;")}"]`);
+          const targetUserId = String((select && select.value) || "").trim();
+          if (!targetUserId) {
+            showMessage("Select a user to grant.", true);
+            return;
+          }
+          await call(`/api/servers/${encodeURIComponent(serverId)}/access`, {
+            method: "POST",
+            body: JSON.stringify({ user_id: targetUserId }),
+          });
+          showMessage("Access granted.");
+          await loadUsersCenter();
+          return;
+        }
+        if (action === "revoke" && serverId && userId) {
+          await call(`/api/servers/${encodeURIComponent(serverId)}/access/${encodeURIComponent(userId)}`, { method: "DELETE" });
+          showMessage("Access revoked.");
+          await loadUsersCenter();
+        }
+      } catch (err) {
+        showMessage(String(err.message || err), true);
+      }
+    });
+  });
+}
+
 async function loadInvitations() {
   const host = document.getElementById("invitations");
   const canManageUsers = Array.isArray(currentUser?.permissions)
@@ -1003,6 +1195,7 @@ function setView(view) {
   document.getElementById("playersCard").classList.toggle("hidden", view !== "players");
   document.getElementById("modsCard").classList.toggle("hidden", view !== "mods");
   document.getElementById("backupsCard").classList.toggle("hidden", view !== "backups");
+  document.getElementById("usersCard").classList.toggle("hidden", view !== "users");
   document.getElementById("invitationsCard").classList.toggle("hidden", view !== "invitations");
 
   if (view === "jobs") {
@@ -1040,6 +1233,10 @@ async function refreshCurrentView() {
   }
   if (currentView === "players") {
     await loadPlayers();
+    return;
+  }
+  if (currentView === "users") {
+    await loadUsersCenter();
     return;
   }
   if (currentView === "invitations") {
@@ -1270,6 +1467,7 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   document.getElementById("playersCard").classList.add("hidden");
   document.getElementById("modsCard").classList.add("hidden");
   document.getElementById("backupsCard").classList.add("hidden");
+  document.getElementById("usersCard").classList.add("hidden");
   document.getElementById("invitationsCard").classList.add("hidden");
   document.getElementById("settingsCard").classList.add("hidden");
   document.getElementById("accessCard").classList.add("hidden");
@@ -1418,6 +1616,23 @@ document.getElementById("navBackupsBtn").addEventListener("click", async () => {
   try {
     setView("backups");
     await refreshCurrentView();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("navUsersBtn").addEventListener("click", async () => {
+  try {
+    setView("users");
+    await refreshCurrentView();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("refreshUsersBtn").addEventListener("click", async () => {
+  try {
+    await loadUsersCenter();
   } catch (err) {
     showMessage(String(err.message || err), true);
   }

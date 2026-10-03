@@ -27,11 +27,23 @@ def portal_client(monkeypatch):
             return {"success": True, "servers": [{"id": "owned"}]}
         if path == "/api/v1/servers/owned":
             return {"success": True, "server": {"id": "owned", "name": "Owned", "status": "running", "pid": 42, "uptime_seconds": 120, "owner_id": "alice"}}
+        if path == "/api/v1/access-matrix":
+            return {
+                "success": True,
+                "users": [{"id": "alice", "name": "Alice", "role": "OWNER", "active": True, "permissions": []}],
+                "servers": [{"id": "owned", "name": "Owned", "owner_id": "alice", "shared_with": [], "can_manage_access": True}],
+            }
+        if path == "/api/v1/access-audit?limit=5":
+            return {"success": True, "events": [{"id": "evt-1", "action": "grant_access", "actor": "alice", "at": 1.0, "payload": {"server_id": "owned", "user_id": "bob"}}]}
         if path == "/api/v1/invitations":
             if method == "GET":
                 return {"success": True, "invitations": [{"id": "inv-1", "target": "bob", "role": "MEMBER", "status": "pending"}]}
             if method == "POST":
                 return {"success": True, "invitation": {"id": "inv-2", "target": "charlie", "role": "ADMIN", "status": "pending"}}
+        if path == "/api/v1/users/bob/activate" and method == "POST":
+            return {"success": True, "user": {"id": "bob", "name": "Bob", "role": "MEMBER", "active": True, "permissions": []}}
+        if path == "/api/v1/users/bob/deactivate" and method == "POST":
+            return {"success": True, "user": {"id": "bob", "name": "Bob", "role": "MEMBER", "active": False, "permissions": []}}
         if path.endswith("/access"):
             return {"success": True, "server_id": "owned", "owner_id": "alice", "shared_with": ["bob"]}
         if path == "/api/v1/invitations/inv-1" and method == "DELETE":
@@ -193,6 +205,29 @@ def test_backups_proxy_routes_use_session_identity(portal_client):
         ("alice", "GET", "/api/v1/servers/owned/backups", None),
         ("alice", "POST", "/api/v1/servers/owned/backups", {}),
         ("alice", "POST", "/api/v1/servers/owned/backups/backup-id/restore", {}),
+    ]
+
+
+def test_users_center_proxy_routes_use_session_identity(portal_client):
+    client, calls = portal_client
+    client.post("/api/login", json={"user_id": "alice", "password": "correct-password"})
+
+    matrix = client.get("/api/access-matrix")
+    audit = client.get("/api/access-audit", params={"limit": 5})
+    activate = client.post("/api/users/bob/activate")
+    deactivate = client.post("/api/users/bob/deactivate")
+
+    assert matrix.status_code == 200
+    assert matrix.json()["servers"][0]["id"] == "owned"
+    assert audit.status_code == 200
+    assert audit.json()["events"][0]["action"] == "grant_access"
+    assert activate.status_code == 200
+    assert deactivate.status_code == 200
+    assert calls == [
+        ("alice", "GET", "/api/v1/access-matrix", None),
+        ("alice", "GET", "/api/v1/access-audit?limit=5", None),
+        ("alice", "POST", "/api/v1/users/bob/activate", {}),
+        ("alice", "POST", "/api/v1/users/bob/deactivate", {}),
     ]
 
 

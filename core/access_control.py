@@ -267,6 +267,22 @@ class UserManager:
     def list_users(self) -> list[UserAccount]:
         return [self._users[key] for key in sorted(self._users.keys())]
 
+    def set_active(self, user_id: str, active: bool) -> UserAccount:
+        user = self._users.get(user_id)
+        if user is None:
+            raise ValueError("user_not_found")
+        if user.role == ROLE_OWNER and not active:
+            raise ValueError("owner_user_protected")
+
+        was_active = user.active
+        user.active = bool(active)
+        try:
+            self._save_persisted_users()
+        except UserStoreError:
+            user.active = was_active
+            raise
+        return user
+
     def is_server_owner(self, user: UserAccount, config: Any) -> bool:
         if user.role == ROLE_OWNER:
             return True

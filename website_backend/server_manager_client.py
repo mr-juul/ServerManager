@@ -79,6 +79,18 @@ class ServerManagerClient:
     def create_user(self, payload: dict) -> dict:
         return self._call("POST", "/api/v1/users", payload=payload)
 
+    def activate_user(self, user_id: str) -> dict:
+        return self._call("POST", f"/api/v1/users/{user_id}/activate", payload={})
+
+    def deactivate_user(self, user_id: str) -> dict:
+        return self._call("POST", f"/api/v1/users/{user_id}/deactivate", payload={})
+
+    def get_access_matrix(self) -> dict:
+        return self._call("GET", "/api/v1/access-matrix")
+
+    def get_access_audit(self, limit: int = 50) -> dict:
+        return self._call("GET", f"/api/v1/access-audit?limit={max(1, int(limit))}")
+
     def create_invitation(self, payload: dict) -> dict:
         return self._call("POST", "/api/v1/invitations", payload=payload)
 

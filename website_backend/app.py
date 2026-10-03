@@ -220,6 +220,38 @@ async def create_user(request: Request, _session=Depends(_require_session)):
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
 
+@app.post("/api/users/{user_id}/activate")
+async def activate_user(user_id: str, _session=Depends(_require_session)):
+    try:
+        return _session.activate_user(user_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/users/{user_id}/deactivate")
+async def deactivate_user(user_id: str, _session=Depends(_require_session)):
+    try:
+        return _session.deactivate_user(user_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/access-matrix")
+async def access_matrix(_session=Depends(_require_session)):
+    try:
+        return _session.get_access_matrix()
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/access-audit")
+async def access_audit(limit: int = 50, _session=Depends(_require_session)):
+    try:
+        return _session.get_access_audit(limit=limit)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
 @app.post("/api/invitations")
 async def invitations(request: Request, _session=Depends(_require_session)):
     body = await request.json()

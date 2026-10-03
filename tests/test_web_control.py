@@ -563,6 +563,53 @@ def test_v1_users_forbidden_for_member(monkeypatch):
     assert payload["error"] == "forbidden"
 
 
+def test_v1_access_matrix_and_audit(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, manager = _client()
+
+    manager.configs["valheim-kirken"].shared_with = ["member-local"]
+    response = client.get("/api/v1/access-matrix", headers={"X-API-Key": "abc123"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert isinstance(payload.get("users"), list)
+    assert isinstance(payload.get("servers"), list)
+    assert payload["servers"][0]["id"] == "valheim-kirken"
+
+    audit = client.get("/api/v1/access-audit", headers={"X-API-Key": "abc123"})
+    assert audit.status_code == 200
+    audit_payload = audit.json()
+    assert audit_payload["success"] is True
+    assert isinstance(audit_payload.get("events"), list)
+
+
+def test_v1_activate_and_deactivate_user(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, _ = _client()
+
+    create = client.post(
+        "/api/v1/users",
+        json={"user_id": "qa-user", "name": "QA User", "password": "secret1234", "role": "MEMBER"},
+        headers={"X-API-Key": "abc123"},
+    )
+    assert create.status_code == 200
+
+    deactivate = client.post("/api/v1/users/qa-user/deactivate", json={}, headers={"X-API-Key": "abc123"})
+    assert deactivate.status_code == 200
+    assert deactivate.json()["user"]["active"] is False
+
+    activate = client.post("/api/v1/users/qa-user/activate", json={}, headers={"X-API-Key": "abc123"})
+    assert activate.status_code == 200
+    assert activate.json()["user"]["active"] is True
+
+    audit = client.get("/api/v1/access-audit", headers={"X-API-Key": "abc123"})
+    assert audit.status_code == 200
+    events = audit.json().get("events", [])
+    actions = {item.get("action") for item in events}
+    assert "user_activate" in actions
+    assert "user_deactivate" in actions
+
+
 def test_v1_create_server_forbidden_for_member(monkeypatch):
     monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
     client, _ = _client()
