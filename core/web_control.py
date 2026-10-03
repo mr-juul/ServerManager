@@ -426,6 +426,12 @@ class _WebControlBackend:
             return False
         if not definition.server_search_names:
             return False
+
+        # If we already know a valid installation path, allow create even when
+        # environment detection is noisy on clean CI runners.
+        if self._resolve_installation_path(game_id) is not None:
+            return True
+
         status = self._game_status(game_id)
         if status.state != "READY":
             return False
@@ -497,7 +503,10 @@ class _WebControlBackend:
         for config in self.manager.configs.values():
             if config.game != game_id:
                 continue
-            candidate = Path(str(config.executable_directory or "").strip())
+            location = str(config.executable_directory or "").strip()
+            if not location:
+                continue
+            candidate = Path(location)
             if candidate.is_dir():
                 return candidate
         status = detect_game(game_definition(game_id))

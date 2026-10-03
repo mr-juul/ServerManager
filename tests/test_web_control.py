@@ -229,7 +229,15 @@ def test_v1_games_catalog(monkeypatch):
 
 def test_v1_create_schema_for_valheim(monkeypatch):
     monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
-    client, _ = _client()
+    client, manager = _client()
+    manager.configs["valheim-kirken"].executable_directory = ""
+
+    class _Status:
+        state = "WARNING"
+        installation_path = None
+
+    monkeypatch.setattr("core.web_control.detect_game", lambda *_args, **_kwargs: _Status())
+
     response = client.get("/api/v1/games/valheim/create-schema", headers={"X-API-Key": "abc123"})
     assert response.status_code == 200
     payload = response.json()
