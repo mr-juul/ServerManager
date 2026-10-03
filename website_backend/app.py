@@ -382,6 +382,50 @@ async def players(server_id: str, _session=Depends(_require_session)):
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
 
+@app.get("/api/servers/{server_id}/moderation")
+async def moderation(server_id: str, _session=Depends(_require_session)):
+    try:
+        return _session.get_moderation(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/moderation/kick")
+async def moderation_kick(server_id: str, request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    try:
+        return _session.kick_player(server_id, body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/moderation/ban")
+async def moderation_ban(server_id: str, request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    try:
+        return _session.ban_player(server_id, body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/moderation/unban")
+async def moderation_unban(server_id: str, request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    try:
+        return _session.unban_player(server_id, body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/moderation/note")
+async def moderation_note(server_id: str, request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    try:
+        return _session.note_player(server_id, body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
 @app.get("/api/servers/{server_id}/settings")
 async def server_settings(server_id: str, _session=Depends(_require_session)):
     try:

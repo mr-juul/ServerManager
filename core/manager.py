@@ -89,6 +89,15 @@ class ServerManager:
         self.processes[server_id].restart()
         self.logger.info("%s restarted", self.configs[server_id].name)
 
+    def send_command(self, server_id: str, command: str) -> bool:
+        process = self.processes[server_id]
+        sent = process.send_command(command)
+        if sent:
+            self.logger.info("%s command sent: %s", self.configs[server_id].name, command)
+        else:
+            self.logger.warning("%s command not sent (server offline or stdin unavailable)", self.configs[server_id].name)
+        return sent
+
     def start_all(self) -> None:
         for server_id in self.processes:
             try:

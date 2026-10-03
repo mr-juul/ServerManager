@@ -30,6 +30,7 @@ class FakeManager:
         self.started = 0
         self.stopped = 0
         self.restarted = 0
+        self.commands: list[tuple[str, str]] = []
 
     def start(self, server_id: str):
         self.started += 1
@@ -42,6 +43,10 @@ class FakeManager:
     def restart(self, server_id: str):
         self.restarted += 1
         self.processes[server_id].status = ServerStatus.ONLINE
+
+    def send_command(self, server_id: str, command: str) -> bool:
+        self.commands.append((server_id, command))
+        return self.processes[server_id].status in {ServerStatus.ONLINE, ServerStatus.STARTING}
 
     def _create_process(self, _config: ServerConfig):
         return FakeProcess()
@@ -608,6 +613,55 @@ def test_v1_activate_and_deactivate_user(monkeypatch):
     actions = {item.get("action") for item in events}
     assert "user_activate" in actions
     assert "user_deactivate" in actions
+
+
+def test_v1_player_moderation_lifecycle(monkeypatch):
+    monkeypatch.setenv("SERVER_MANAGER_API_KEY", "abc123")
+    client, _ = _client()
+    headers = {"X-API-Key": "abc123"}
+
+    baseline = client.get("/api/v1/servers/valheim-kirken/moderation", headers=headers)
+    assert baseline.status_code == 200
+    assert baseline.json()["success"] is True
+
+    note = client.post(
+        "/api/v1/servers/valheim-kirken/moderation/note",
+        json={"player": "Oscar", "note": "Great builder"},
+        headers=headers,
+    )
+    assert note.status_code == 200
+
+    kick = client.post(
+        "/api/v1/servers/valheim-kirken/moderation/kick",
+        json={"player": "Oscar", "reason": "afk slot"},
+        headers=headers,
+    )
+    assert kick.status_code == 200
+    assert kick.json()["status"] == "queued"
+
+    ban = client.post(
+        "/api/v1/servers/valheim-kirken/moderation/ban",
+        json={"player": "Oscar", "reason": "testing"},
+        headers=headers,
+    )
+    assert ban.status_code == 200
+    bans = ban.json().get("bans", [])
+    assert any(str(item.get("player")) == "Oscar" for item in bans)
+
+    unban = client.post(
+        "/api/v1/servers/valheim-kirken/moderation/unban",
+        json={"player": "Oscar"},
+        headers=headers,
+    )
+    assert unban.status_code == 200
+    assert not any(str(item.get("player")) == "Oscar" for item in unban.json().get("bans", []))
+
+    listing = client.get("/api/v1/servers/valheim-kirken/moderation", headers=headers)
+    assert listing.status_code == 200
+    payload = listing.json()
+    assert payload["success"] is True
+    assert isinstance(payload.get("events"), list)
+    assert any(str(event.get("action")) == "kick" for event in payload.get("events", []))
 
 
 def test_v1_create_server_forbidden_for_member(monkeypatch):

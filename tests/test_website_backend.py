@@ -27,6 +27,16 @@ def portal_client(monkeypatch):
             return {"success": True, "servers": [{"id": "owned"}]}
         if path == "/api/v1/servers/owned":
             return {"success": True, "server": {"id": "owned", "name": "Owned", "status": "running", "pid": 42, "uptime_seconds": 120, "owner_id": "alice"}}
+        if path == "/api/v1/servers/owned/moderation" and method == "GET":
+            return {"success": True, "server_id": "owned", "bans": [], "notes": [], "events": []}
+        if path == "/api/v1/servers/owned/moderation/kick" and method == "POST":
+            return {"success": True, "status": "queued", "events": [{"action": "kick"}]}
+        if path == "/api/v1/servers/owned/moderation/ban" and method == "POST":
+            return {"success": True, "bans": [{"player": "bob"}]}
+        if path == "/api/v1/servers/owned/moderation/unban" and method == "POST":
+            return {"success": True, "bans": []}
+        if path == "/api/v1/servers/owned/moderation/note" and method == "POST":
+            return {"success": True, "notes": [{"player": "bob", "note": "watch"}]}
         if path == "/api/v1/access-matrix":
             return {
                 "success": True,
@@ -228,6 +238,30 @@ def test_users_center_proxy_routes_use_session_identity(portal_client):
         ("alice", "GET", "/api/v1/access-audit?limit=5", None),
         ("alice", "POST", "/api/v1/users/bob/activate", {}),
         ("alice", "POST", "/api/v1/users/bob/deactivate", {}),
+    ]
+
+
+def test_player_moderation_proxy_routes_use_session_identity(portal_client):
+    client, calls = portal_client
+    client.post("/api/login", json={"user_id": "alice", "password": "correct-password"})
+
+    listing = client.get("/api/servers/owned/moderation")
+    kick = client.post("/api/servers/owned/moderation/kick", json={"player": "bob", "reason": "spam"})
+    ban = client.post("/api/servers/owned/moderation/ban", json={"player": "bob", "reason": "toxicity"})
+    unban = client.post("/api/servers/owned/moderation/unban", json={"player": "bob"})
+    note = client.post("/api/servers/owned/moderation/note", json={"player": "bob", "note": "watch"})
+
+    assert listing.status_code == 200
+    assert kick.status_code == 200
+    assert ban.status_code == 200
+    assert unban.status_code == 200
+    assert note.status_code == 200
+    assert calls == [
+        ("alice", "GET", "/api/v1/servers/owned/moderation", None),
+        ("alice", "POST", "/api/v1/servers/owned/moderation/kick", {"player": "bob", "reason": "spam"}),
+        ("alice", "POST", "/api/v1/servers/owned/moderation/ban", {"player": "bob", "reason": "toxicity"}),
+        ("alice", "POST", "/api/v1/servers/owned/moderation/unban", {"player": "bob"}),
+        ("alice", "POST", "/api/v1/servers/owned/moderation/note", {"player": "bob", "note": "watch"}),
     ]
 
 

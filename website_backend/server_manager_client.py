@@ -148,6 +148,21 @@ class ServerManagerClient:
     def get_players(self, server_id: str) -> dict:
         return self._call("GET", f"/api/v1/servers/{server_id}/players")
 
+    def get_moderation(self, server_id: str) -> dict:
+        return self._call("GET", f"/api/v1/servers/{server_id}/moderation")
+
+    def kick_player(self, server_id: str, payload: dict) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/moderation/kick", payload=payload)
+
+    def ban_player(self, server_id: str, payload: dict) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/moderation/ban", payload=payload)
+
+    def unban_player(self, server_id: str, payload: dict) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/moderation/unban", payload=payload)
+
+    def note_player(self, server_id: str, payload: dict) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/moderation/note", payload=payload)
+
     def get_server_settings(self, server_id: str) -> dict:
         return self._call("GET", f"/api/v1/servers/{server_id}/settings")
 

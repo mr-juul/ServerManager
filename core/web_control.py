@@ -227,6 +227,9 @@ class _WebControlBackend:
         self.jobs: dict[str, _Job] = {}
         self.restore_history: dict[str, list[dict[str, Any]]] = {}
         self.access_audit: list[dict[str, Any]] = []
+        self.player_bans: dict[str, dict[str, dict[str, Any]]] = {}
+        self.player_notes: dict[str, dict[str, dict[str, Any]]] = {}
+        self.player_moderation_events: dict[str, list[dict[str, Any]]] = {}
         self.mod_manager = None
         if app_root:
             try:
@@ -786,6 +789,91 @@ class _WebControlBackend:
             "recent_events": events[-20:],
             "event_count": len(events),
             "source": "recent_output",
+        }
+
+    def _normalize_player_name(self, value: str) -> str:
+        player = str(value or "").strip()
+        if not player:
+            raise HTTPException(status_code=400, detail="player_required")
+        if len(player) > 64:
+            raise HTTPException(status_code=400, detail="player_name_too_long")
+        return player
+
+    def _record_player_moderation_event(self, server_id: str, action: str, actor: str, payload: dict[str, Any]) -> None:
+        rows = self.player_moderation_events.setdefault(server_id, [])
+        rows.insert(
+            0,
+            {
+                "id": secrets.token_urlsafe(8),
+                "action": action,
+                "actor": actor,
+                "at": time.time(),
+                "payload": payload,
+            },
+        )
+        del rows[100:]
+
+    def _server_moderation_payload(self, server_id: str) -> dict[str, Any]:
+        bans = self.player_bans.get(server_id, {})
+        notes = self.player_notes.get(server_id, {})
+        events = self.player_moderation_events.get(server_id, [])
+        return {
+            "server_id": server_id,
+            "bans": [
+                {
+                    "player": player,
+                    "reason": str(data.get("reason") or ""),
+                    "by": str(data.get("by") or ""),
+                    "at": float(data.get("at") or 0),
+                }
+                for player, data in sorted(bans.items(), key=lambda item: item[0].lower())
+            ],
+            "notes": [
+                {
+                    "player": player,
+                    "note": str(data.get("note") or ""),
+                    "by": str(data.get("by") or ""),
+                    "updated_at": float(data.get("updated_at") or 0),
+                }
+                for player, data in sorted(notes.items(), key=lambda item: item[0].lower())
+            ],
+            "events": list(events[:30]),
+        }
+
+    def _moderation_command(self, server_id: str, action: str, player: str, reason: str = "") -> str:
+        config, _ = self._get_server_or_404(server_id)
+        game = str(config.game or "").strip().lower()
+        safe_reason = reason.replace("\n", " ").replace("\r", " ").strip()
+        if action == "kick":
+            if game == "minecraft-java":
+                return f"kick {player} {safe_reason}".strip()
+            return f"kick {player}"
+        if action == "ban":
+            if game == "minecraft-java":
+                return f"ban {player} {safe_reason}".strip()
+            return f"ban {player}"
+        if action == "unban":
+            if game == "minecraft-java":
+                return f"pardon {player}"
+            return f"unban {player}"
+        raise ValueError("invalid_moderation_action")
+
+    def _dispatch_moderation_command(self, server_id: str, action: str, player: str, reason: str = "") -> dict[str, Any]:
+        command = self._moderation_command(server_id, action, player, reason)
+        process = self.manager.processes.get(server_id)
+        if process is None:
+            return {"sent": False, "command": command, "reason": "server_not_found"}
+        state = self._server_state(process)
+        if state not in {"RUNNING", "STARTING"}:
+            return {"sent": False, "command": command, "reason": "server_not_running"}
+        try:
+            sent = self.manager.send_command(server_id, command)
+        except Exception:
+            sent = False
+        return {
+            "sent": bool(sent),
+            "command": command,
+            "reason": "ok" if sent else "stdin_unavailable",
         }
 
     def _server_backup_root(self, config: ServerConfig) -> Path | None:
@@ -1659,6 +1747,105 @@ def create_web_app(
         _require_permission(_access, PERMISSION_VIEW_SERVERS)
         _server_for(_access, server_id)
         return _v1_success(server_id=server_id, **backend._server_players_payload(server_id))
+
+    @app.get("/api/v1/servers/{server_id}/moderation")
+    async def api_v1_server_moderation(server_id: str, access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(access, PERMISSION_VIEW_SERVERS)
+        _server_for(access, server_id)
+        with backend.lock:
+            payload = backend._server_moderation_payload(server_id)
+        return _v1_success(**payload)
+
+    @app.post("/api/v1/servers/{server_id}/moderation/ban")
+    async def api_v1_ban_player(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_CONTROL_SERVERS)
+        _server_for(access, server_id)
+        body = await request.json()
+        player = backend._normalize_player_name((body or {}).get("player") or "")
+        reason = str((body or {}).get("reason") or "").strip()
+        command_status = backend._dispatch_moderation_command(server_id, "ban", player, reason)
+        with backend.lock:
+            bans = backend.player_bans.setdefault(server_id, {})
+            bans[player] = {"reason": reason, "by": access.user.user_id, "at": time.time()}
+            backend._record_player_moderation_event(
+                server_id,
+                "ban",
+                access.user.user_id,
+                {"player": player, "reason": reason, "command": command_status},
+            )
+            payload = backend._server_moderation_payload(server_id)
+        return _v1_success(command=command_status, **payload)
+
+    @app.post("/api/v1/servers/{server_id}/moderation/unban")
+    async def api_v1_unban_player(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_CONTROL_SERVERS)
+        _server_for(access, server_id)
+        body = await request.json()
+        player = backend._normalize_player_name((body or {}).get("player") or "")
+        command_status = backend._dispatch_moderation_command(server_id, "unban", player)
+        with backend.lock:
+            bans = backend.player_bans.setdefault(server_id, {})
+            if player not in bans:
+                raise HTTPException(status_code=404, detail="player_not_banned")
+            bans.pop(player, None)
+            backend._record_player_moderation_event(
+                server_id,
+                "unban",
+                access.user.user_id,
+                {"player": player, "command": command_status},
+            )
+            payload = backend._server_moderation_payload(server_id)
+        return _v1_success(command=command_status, **payload)
+
+    @app.post("/api/v1/servers/{server_id}/moderation/kick")
+    async def api_v1_kick_player(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_CONTROL_SERVERS)
+        _server_for(access, server_id)
+        body = await request.json()
+        player = backend._normalize_player_name((body or {}).get("player") or "")
+        reason = str((body or {}).get("reason") or "").strip()
+        command_status = backend._dispatch_moderation_command(server_id, "kick", player, reason)
+        with backend.lock:
+            backend._record_player_moderation_event(
+                server_id,
+                "kick",
+                access.user.user_id,
+                {
+                    "player": player,
+                    "reason": reason,
+                    "status": "sent" if command_status.get("sent") else "queued",
+                    "command": command_status,
+                },
+            )
+            payload = backend._server_moderation_payload(server_id)
+        return _v1_success(status="sent" if command_status.get("sent") else "queued", command=command_status, **payload)
+
+    @app.post("/api/v1/servers/{server_id}/moderation/note")
+    async def api_v1_note_player(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_CONTROL_SERVERS)
+        _server_for(access, server_id)
+        body = await request.json()
+        player = backend._normalize_player_name((body or {}).get("player") or "")
+        note = str((body or {}).get("note") or "").strip()
+        if not note:
+            raise HTTPException(status_code=400, detail="note_required")
+        if len(note) > 400:
+            raise HTTPException(status_code=400, detail="note_too_long")
+        with backend.lock:
+            notes = backend.player_notes.setdefault(server_id, {})
+            notes[player] = {"note": note, "by": access.user.user_id, "updated_at": time.time()}
+            backend._record_player_moderation_event(
+                server_id,
+                "note",
+                access.user.user_id,
+                {"player": player, "note": note},
+            )
+            payload = backend._server_moderation_payload(server_id)
+        return _v1_success(**payload)
 
     @app.get("/api/v1/servers/{server_id}/settings")
     async def api_v1_server_settings(server_id: str, _access: _AccessContext = Depends(_require_v1_access)):

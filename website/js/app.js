@@ -939,7 +939,10 @@ async function loadPlayers() {
   const selectedServerId = selectedPlayersServerId || String(servers[0].id);
   const selectedServer = servers.find((item) => String(item.id) === String(selectedServerId)) || servers[0];
   selectedPlayersServerId = String(selectedServer.id);
-  const playersPayload = await call(`/api/servers/${selectedServer.id}/players`);
+  const [playersPayload, moderationPayload] = await Promise.all([
+    call(`/api/servers/${selectedServer.id}/players`),
+    call(`/api/servers/${selectedServer.id}/moderation`).catch(() => ({ bans: [], notes: [], events: [] })),
+  ]);
   const players = playersPayload.players || [];
   const supported = Boolean(playersPayload.supported);
   const online = playersPayload.online ?? 0;
@@ -947,6 +950,13 @@ async function loadPlayers() {
   const sessions = Array.isArray(playersPayload.sessions) ? playersPayload.sessions : [];
   const recentEvents = Array.isArray(playersPayload.recent_events) ? playersPayload.recent_events.slice(-12).reverse() : [];
   const eventCount = Number(playersPayload.event_count || 0);
+  const bans = Array.isArray(moderationPayload.bans) ? moderationPayload.bans : [];
+  const notes = Array.isArray(moderationPayload.notes) ? moderationPayload.notes : [];
+  const moderationEvents = Array.isArray(moderationPayload.events) ? moderationPayload.events.slice(0, 12) : [];
+  const canModerate = Array.isArray(currentUser?.permissions)
+    && currentUser.permissions.includes("control_servers");
+
+  const noteByPlayer = new Map(notes.map((entry) => [String(entry.player || ""), entry]));
 
   host.innerHTML = `
     <label class="field">
@@ -969,6 +979,8 @@ async function loadPlayers() {
           <div class="event-row">
             <div><strong>${escapeHtml(session.player || "-")}</strong></div>
             <div class="muted">Joined at ${formatLineMetric(session.joined_line)} | Last seen ${formatLineMetric(session.last_seen_line)} | Activity span ${typeof session.line_span === "number" ? `${session.line_span} lines` : "-"}</div>
+            ${noteByPlayer.get(String(session.player || "")) ? `<div class="muted">Note: ${escapeHtml(String(noteByPlayer.get(String(session.player || "")).note || ""))}</div>` : ""}
+            ${canModerate ? `<div class="row" style="margin-top: 6px;"><button class="small" data-player-action="kick" data-player="${escapeHtml(session.player || "")}">Kick</button><button class="small" data-player-action="ban" data-player="${escapeHtml(session.player || "")}">Ban</button><button class="small" data-player-action="note" data-player="${escapeHtml(session.player || "")}">Add note</button></div>` : ""}
           </div>
         `).join("") : '<div class="muted">No active sessions detected.</div>'}
         <div class="muted" style="margin-top:8px;">Recent player events</div>
@@ -979,6 +991,23 @@ async function loadPlayers() {
           </div>
         `).join("") : '<div class="muted">No recent join/leave events.</div>'}
       ` : ""}
+
+      <div class="muted" style="margin-top:8px;">Banned players</div>
+      ${bans.length ? bans.map((entry) => `
+        <div class="event-row">
+          <div><strong>${escapeHtml(entry.player || "-")}</strong></div>
+          <div class="muted">Reason: ${escapeHtml(entry.reason || "-")} | By: ${escapeHtml(entry.by || "-")} | ${formatDateTime(entry.at)}</div>
+          ${canModerate ? `<div class="row" style="margin-top: 6px;"><button class="small" data-player-action="unban" data-player="${escapeHtml(entry.player || "")}">Unban</button></div>` : ""}
+        </div>
+      `).join("") : '<div class="muted">No banned players.</div>'}
+
+      <div class="muted" style="margin-top:8px;">Moderation activity</div>
+      ${moderationEvents.length ? moderationEvents.map((entry) => `
+        <div class="event-row">
+          <div><strong>${escapeHtml(String(entry.action || "event").toUpperCase())}</strong> by ${escapeHtml(entry.actor || "-")}</div>
+          <div class="muted">${formatDateTime(entry.at)} | ${escapeHtml(JSON.stringify(entry.payload || {}))}</div>
+        </div>
+      `).join("") : '<div class="muted">No moderation activity yet.</div>'}
     </div>
   `;
 
@@ -989,6 +1018,65 @@ async function loadPlayers() {
       await loadPlayers();
     });
   }
+
+  host.querySelectorAll("button[data-player-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = String(button.dataset.playerAction || "");
+      const player = String(button.dataset.player || "").trim();
+      if (!action || !player) {
+        return;
+      }
+      try {
+        if (action === "kick") {
+          const reason = String(window.prompt(`Kick ${player}. Optional reason:`) || "").trim();
+          const response = await call(`/api/servers/${encodeURIComponent(selectedServer.id)}/moderation/kick`, {
+            method: "POST",
+            body: JSON.stringify({ player, reason }),
+          });
+          const sent = Boolean(response?.command?.sent);
+          showMessage(sent ? "Kick command sent to server." : "Kick request queued (server not accepting commands right now).");
+          await loadPlayers();
+          return;
+        }
+        if (action === "ban") {
+          const reason = String(window.prompt(`Ban ${player}. Optional reason:`) || "").trim();
+          const response = await call(`/api/servers/${encodeURIComponent(selectedServer.id)}/moderation/ban`, {
+            method: "POST",
+            body: JSON.stringify({ player, reason }),
+          });
+          const sent = Boolean(response?.command?.sent);
+          showMessage(sent ? "Player banned and command sent." : "Player banned in policy (live command not sent).");
+          await loadPlayers();
+          return;
+        }
+        if (action === "unban") {
+          const response = await call(`/api/servers/${encodeURIComponent(selectedServer.id)}/moderation/unban`, {
+            method: "POST",
+            body: JSON.stringify({ player }),
+          });
+          const sent = Boolean(response?.command?.sent);
+          showMessage(sent ? "Player unbanned and command sent." : "Player unbanned in policy (live command not sent).");
+          await loadPlayers();
+          return;
+        }
+        if (action === "note") {
+          const note = String(window.prompt(`Add moderation note for ${player}:`) || "").trim();
+          if (!note) {
+            showMessage("Note was empty. Nothing saved.", true);
+            return;
+          }
+          await call(`/api/servers/${encodeURIComponent(selectedServer.id)}/moderation/note`, {
+            method: "POST",
+            body: JSON.stringify({ player, note }),
+          });
+          showMessage("Moderation note saved.");
+          await loadPlayers();
+        }
+      } catch (err) {
+        showMessage(String(err.message || err), true);
+      }
+    });
+  });
 }
 
 async function loadGames() {

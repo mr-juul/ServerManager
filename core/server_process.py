@@ -89,7 +89,7 @@ class ServerProcess:
             creation_flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
             self.process = subprocess.Popen(
                 ["cmd.exe", "/d", "/c", str(script)], cwd=str(working_directory),
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", creationflags=creation_flags,
             )
             self.started_at = time.monotonic()
@@ -228,3 +228,20 @@ class ServerProcess:
     def restart(self) -> None:
         self.stop()
         self.start()
+
+    def send_command(self, command: str) -> bool:
+        text = str(command or "").strip()
+        if not text:
+            raise ValueError("command_required")
+        with self._lock:
+            if not self.process or self.process.poll() is not None:
+                return False
+            stdin = self.process.stdin
+            if stdin is None:
+                return False
+            try:
+                stdin.write(text + "\n")
+                stdin.flush()
+                return True
+            except (BrokenPipeError, OSError):
+                return False
