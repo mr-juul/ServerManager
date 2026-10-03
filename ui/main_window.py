@@ -942,7 +942,7 @@ class MainWindow(QMainWindow):
         self.web_exposure_label = QLabel("Automatisk")
         self.web_password_label = QLabel("Ikke konfigureret")
 
-        open_web = QPushButton("ÅBN WEB CONTROL")
+        open_web = QPushButton("ÅBN PORTAL")
         open_web.clicked.connect(self.open_web_control)
         enable_web = QPushButton("AKTIVER WEB CONTROL")
         enable_web.clicked.connect(self.enable_web_control_simple)
@@ -1293,11 +1293,13 @@ class MainWindow(QMainWindow):
         self.settings.web_control_bind_address = "0.0.0.0"
         self._save_configuration()
         self._apply_web_control_settings()
+        self.start_external_remote_site(notify=False)
 
     def disable_web_control_simple(self):
         self.settings.web_control_enabled = False
         self._save_configuration()
         self._apply_web_control_settings()
+        self.stop_external_remote_site()
 
     def _ensure_web_api_key(self) -> str:
         key = str(self.settings.web_control_api_key or "").strip()
@@ -1311,7 +1313,7 @@ class MainWindow(QMainWindow):
     def _external_site_url(self) -> str:
         return f"http://{self.web_control.local_ip()}:{int(self.settings.external_web_port)}"
 
-    def start_external_remote_site(self):
+    def start_external_remote_site(self, notify: bool = True):
         if not self.settings.web_control_enabled:
             self.enable_web_control_simple()
             if not self.settings.web_control_enabled:
@@ -1353,7 +1355,8 @@ class MainWindow(QMainWindow):
             self.external_site_thread = threading.Thread(target=_run_external_site, daemon=True, name="external-remote-site")
             self.external_site_thread.start()
             self._refresh_web_control_status()
-            QMessageBox.information(self, "Remote side", f"Remote side startet på:\n{self._external_site_url()}")
+            if notify:
+                QMessageBox.information(self, "Remote side", f"Remote side startet på:\n{self._external_site_url()}")
         except Exception as exc:
             QMessageBox.warning(self, "Remote side", f"Kunne ikke starte remote side: {exc}")
 
@@ -1368,7 +1371,7 @@ class MainWindow(QMainWindow):
 
     def open_external_remote_site(self):
         if self.external_site_thread is None or not self.external_site_thread.is_alive():
-            self.start_external_remote_site()
+            self.start_external_remote_site(notify=False)
         url = self._external_site_url()
         if not webbrowser.open(url):
             QMessageBox.information(self, "Remote side", f"Åbn manuelt:\n\n{url}")
@@ -1469,15 +1472,24 @@ class MainWindow(QMainWindow):
                 self.external_site_url_label.setText("-")
 
     def open_web_control(self):
+        if self.external_site_thread is None or not self.external_site_thread.is_alive():
+            self.start_external_remote_site(notify=False)
+
+        portal_url = self._external_site_url()
+        if self.external_site_thread is not None and self.external_site_thread.is_alive():
+            if webbrowser.open(portal_url):
+                return
+
+        # Fallback to built-in web UI if portal cannot be opened.
         if not self.web_control.is_running:
-            QMessageBox.information(self, "Web Control", "Web Control kører ikke.")
+            QMessageBox.information(self, "Web Control", "Portalen kunne ikke startes, og Web Control kører ikke.")
             return
-        url = self.web_control.local_url()
-        opened = webbrowser.open(url)
+        fallback_url = self.web_control.local_url()
+        opened = webbrowser.open(fallback_url)
         if not opened:
-            QMessageBox.information(self, "Web Control", f"Kunne ikke åbne browser automatisk. Åbn manuelt:\n\n{url}")
+            QMessageBox.information(self, "Web Control", f"Kunne ikke åbne browser automatisk. Åbn manuelt:\n\n{portal_url}\neller\n{fallback_url}")
             return
-        if url.startswith("https://"):
+        if fallback_url.startswith("https://"):
             QMessageBox.information(
                 self,
                 "HTTPS info",
