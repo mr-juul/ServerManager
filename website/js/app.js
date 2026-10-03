@@ -12,6 +12,10 @@ let selectedSettingsServerId = "";
 let selectedPlayersServerId = "";
 let currentUser = null;
 let jobsAutoRefreshTimer = null;
+let playersAutoRefreshTimer = null;
+let modsSearchText = "";
+let modsStatusFilter = "all";
+let backupsFilterText = "";
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
@@ -47,6 +51,13 @@ function formatDuration(seconds) {
     return `${minutes}m ${remaining}s`;
   }
   return `${remaining}s`;
+}
+
+function formatLineMetric(value) {
+  if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+    return "-";
+  }
+  return `#${value + 1}`;
 }
 
 async function waitForJob(jobId, startedMessage, failedMessage) {
@@ -552,10 +563,68 @@ async function loadMods() {
 
   const selectedServer = servers.find((item) => String(item.id) === String(selectedServerId)) || servers[0];
   selectedModsServerId = String(selectedServer.id);
-  const serverModsPayload = await call(`/api/servers/${selectedServer.id}/mods`);
-  const serverMods = serverModsPayload.mods || [];
-  const profilesPayload = await call(`/api/mod-profiles?game=${encodeURIComponent(String(selectedServer.game || ""))}`);
-  const profiles = profilesPayload.profiles || [];
+  const [serverModsPayload, profilesPayload, catalogPayload] = await Promise.all([
+    call(`/api/servers/${selectedServer.id}/mods`),
+    call(`/api/mod-profiles?game=${encodeURIComponent(String(selectedServer.game || ""))}`),
+    call(`/api/mods?game=${encodeURIComponent(String(selectedServer.game || ""))}`),
+  ]);
+  const serverMods = Array.isArray(serverModsPayload.mods) ? serverModsPayload.mods : [];
+  const profiles = Array.isArray(profilesPayload.profiles) ? profilesPayload.profiles : [];
+  const catalogMods = Array.isArray(catalogPayload.mods) ? catalogPayload.mods : [];
+
+  const byId = new Map();
+  catalogMods.forEach((item) => {
+    byId.set(String(item.id || ""), {
+      id: String(item.id || ""),
+      name: String(item.name || item.id || "Unknown mod"),
+      game: String(item.game || selectedServer.game || ""),
+      version: String(item.version || "unknown"),
+      status: String(item.status || "available"),
+      enabled: false,
+      installed: false,
+    });
+  });
+  serverMods.forEach((item) => {
+    const modId = String(item.id || "");
+    if (!modId) {
+      return;
+    }
+    const existing = byId.get(modId) || {
+      id: modId,
+      name: String(item.name || modId),
+      game: String(item.game || selectedServer.game || ""),
+      version: String(item.version || "unknown"),
+      status: String(item.status || "available"),
+      enabled: false,
+      installed: false,
+    };
+    existing.name = String(item.name || existing.name || modId);
+    existing.version = String(item.version || existing.version || "unknown");
+    existing.status = String(item.status || existing.status || "available");
+    existing.enabled = Boolean(item.enabled);
+    existing.installed = Boolean(item.installed || item.enabled || String(item.status || "").toUpperCase() === "INSTALLED");
+    byId.set(modId, existing);
+  });
+
+  const searchText = String(modsSearchText || "").trim().toLowerCase();
+  const statusFilter = String(modsStatusFilter || "all").toLowerCase();
+  const mergedMods = Array.from(byId.values()).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const filteredMods = mergedMods.filter((item) => {
+    const text = `${item.name} ${item.id}`.toLowerCase();
+    if (searchText && !text.includes(searchText)) {
+      return false;
+    }
+    if (statusFilter === "enabled") {
+      return Boolean(item.enabled);
+    }
+    if (statusFilter === "installed") {
+      return Boolean(item.installed);
+    }
+    if (statusFilter === "available") {
+      return !item.installed;
+    }
+    return true;
+  });
 
   const profileOptions = profiles.map((profile) => `<option value="${String(profile.name || "")}">${String(profile.name || "")}</option>`).join("");
 
@@ -567,26 +636,43 @@ async function loadMods() {
       </select>
     </label>
     <div class="row">
+      <label class="field" style="flex: 2 1 220px; margin-top: 0;">
+        <span>Search mods</span>
+        <input id="modSearchInput" type="text" placeholder="Search by name or id" value="${escapeHtml(modsSearchText)}" />
+      </label>
+      <label class="field" style="flex: 1 1 160px; margin-top: 0;">
+        <span>Filter</span>
+        <select id="modStatusFilter">
+          <option value="all"${modsStatusFilter === "all" ? " selected" : ""}>All</option>
+          <option value="enabled"${modsStatusFilter === "enabled" ? " selected" : ""}>Enabled</option>
+          <option value="installed"${modsStatusFilter === "installed" ? " selected" : ""}>Installed</option>
+          <option value="available"${modsStatusFilter === "available" ? " selected" : ""}>Available</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
       <select id="modProfileSelect">
         <option value="">Select profile</option>
         ${profileOptions}
       </select>
       <button id="applyProfileBtn" class="small">Apply profile</button>
     </div>
-    ${serverMods.map((mod) => `
+    <div class="muted">Showing ${filteredMods.length} of ${mergedMods.length} mods for ${escapeHtml(String(selectedServer.game || "").toUpperCase())}.</div>
+    ${filteredMods.map((mod) => `
       <article class="server">
-        <div><strong>${mod.name || mod.id}</strong></div>
-        <div class="muted">${String(mod.game || "").toUpperCase()}</div>
-        <div class="muted">Version: ${mod.version || "unknown"}</div>
+        <div><strong>${escapeHtml(mod.name || mod.id)}</strong></div>
+        <div class="muted">${escapeHtml(String(mod.game || "").toUpperCase())}</div>
+        <div class="muted">Version: ${escapeHtml(mod.version || "unknown")}</div>
         <div class="status ${mod.enabled ? "running" : "stopped"}">${mod.enabled ? "ENABLED" : "DISABLED"}</div>
+        <div class="muted">Status: ${escapeHtml(String(mod.status || "available").toUpperCase())} | Installed: ${mod.installed ? "Yes" : "No"}</div>
         <div class="row">
-          <button data-mod-action="install" data-server-id="${selectedServer.id}" data-mod-id="${mod.id}">Install</button>
-          <button data-mod-action="enable" data-server-id="${selectedServer.id}" data-mod-id="${mod.id}">Enable</button>
-          <button data-mod-action="disable" data-server-id="${selectedServer.id}" data-mod-id="${mod.id}">Disable</button>
-          <button data-mod-action="uninstall" data-server-id="${selectedServer.id}" data-mod-id="${mod.id}">Uninstall</button>
+          <button data-mod-action="install" data-server-id="${selectedServer.id}" data-mod-id="${mod.id}"${mod.installed ? " disabled" : ""}>Install</button>
+          <button data-mod-action="enable" data-server-id="${selectedServer.id}" data-mod-id="${mod.id}"${!mod.installed || mod.enabled ? " disabled" : ""}>Enable</button>
+          <button data-mod-action="disable" data-server-id="${selectedServer.id}" data-mod-id="${mod.id}"${!mod.enabled ? " disabled" : ""}>Disable</button>
+          <button data-mod-action="uninstall" data-server-id="${selectedServer.id}" data-mod-id="${mod.id}"${!mod.installed ? " disabled" : ""}>Uninstall</button>
         </div>
       </article>
-    `).join("")}
+    `).join("") || '<div class="muted">No mods match this filter.</div>'}
   `;
 
   document.getElementById("modsServerSelect").addEventListener("change", async (event) => {
@@ -594,6 +680,22 @@ async function loadMods() {
     host.setAttribute("data-selected-server", selectedModsServerId);
     await loadMods();
   });
+
+  const searchInput = document.getElementById("modSearchInput");
+  if (searchInput) {
+    searchInput.addEventListener("input", async (event) => {
+      modsSearchText = String(event.target.value || "");
+      await loadMods();
+    });
+  }
+
+  const statusFilterInput = document.getElementById("modStatusFilter");
+  if (statusFilterInput) {
+    statusFilterInput.addEventListener("change", async (event) => {
+      modsStatusFilter = String(event.target.value || "all");
+      await loadMods();
+    });
+  }
 
   const applyButton = document.getElementById("applyProfileBtn");
   if (applyButton) {
@@ -650,6 +752,9 @@ async function loadPlayers() {
   const supported = Boolean(playersPayload.supported);
   const online = playersPayload.online ?? 0;
   const max = playersPayload.max;
+  const sessions = Array.isArray(playersPayload.sessions) ? playersPayload.sessions : [];
+  const recentEvents = Array.isArray(playersPayload.recent_events) ? playersPayload.recent_events.slice(-12).reverse() : [];
+  const eventCount = Number(playersPayload.event_count || 0);
 
   host.innerHTML = `
     <label class="field">
@@ -662,9 +767,26 @@ async function loadPlayers() {
       <div><strong>${selectedServer.name}</strong></div>
       <div class="muted">${String(selectedServer.game || "").toUpperCase()}</div>
       <div class="muted">Online: ${online}${max ? ` / ${max}` : ""}</div>
+      <div class="muted">Detected events: ${eventCount}</div>
       ${!supported ? '<div class="muted">Players are not supported for this game yet.</div>' : ""}
-      ${supported && players.length ? `<div class="muted">${players.join(", ")}</div>` : ""}
+      ${supported && players.length ? `<div class="chip-list">${players.map((name) => `<span class="chip">${escapeHtml(name)}</span>`).join("")}</div>` : ""}
       ${supported && !players.length ? '<div class="muted">No players online.</div>' : ""}
+      ${supported ? `
+        <div class="muted" style="margin-top:8px;">Active sessions</div>
+        ${sessions.length ? sessions.map((session) => `
+          <div class="event-row">
+            <div><strong>${escapeHtml(session.player || "-")}</strong></div>
+            <div class="muted">Joined at ${formatLineMetric(session.joined_line)} | Last seen ${formatLineMetric(session.last_seen_line)} | Activity span ${typeof session.line_span === "number" ? `${session.line_span} lines` : "-"}</div>
+          </div>
+        `).join("") : '<div class="muted">No active sessions detected.</div>'}
+        <div class="muted" style="margin-top:8px;">Recent player events</div>
+        ${recentEvents.length ? recentEvents.map((event) => `
+          <div class="event-row">
+            <div><strong>${escapeHtml(String(event.event || "event").toUpperCase())}</strong> ${escapeHtml(event.player || "-")}</div>
+            <div class="muted">Log position ${formatLineMetric(event.line)}</div>
+          </div>
+        `).join("") : '<div class="muted">No recent join/leave events.</div>'}
+      ` : ""}
     </div>
   `;
 
@@ -751,6 +873,14 @@ async function loadBackups() {
   const payload = await call(`/api/servers/${selectedServer.id}/backups`);
   const backups = payload.backups || [];
   const restoreHistory = payload.restore_history || [];
+  const filterText = String(backupsFilterText || "").trim().toLowerCase();
+  const filteredBackups = backups.filter((backup) => {
+    if (!filterText) {
+      return true;
+    }
+    const content = `${backup.id || ""} ${backup.name || ""} ${backup.world || ""}`.toLowerCase();
+    return content.includes(filterText);
+  });
 
   host.innerHTML = `
     <label class="field">
@@ -759,24 +889,32 @@ async function loadBackups() {
         ${servers.map((server) => `<option value="${server.id}"${server.id === selectedServer.id ? " selected" : ""}>${server.name}</option>`).join("")}
       </select>
     </label>
+      <label class="field">
+        <span>Filter backups</span>
+        <input id="backupFilterInput" type="text" placeholder="Search by backup id, name, or world" value="${escapeHtml(backupsFilterText)}" />
+      </label>
       <article class="server">
         <div><strong>${selectedServer.name}</strong></div>
         <div class="muted">${String(selectedServer.game || "").toUpperCase()}</div>
-        <div class="muted">${backups.length} backups</div>
+        <div class="muted">${filteredBackups.length} shown of ${backups.length} backups</div>
         <div class="row"><button data-action="create-backup" data-id="${selectedServer.id}">Create backup</button></div>
-        ${(backups || []).slice(0, 5).map((backup) => `
+        ${(filteredBackups || []).map((backup) => `
           <div class="backup-row">
             <div>
-              <div>${backup.name || backup.id}</div>
+              <div>${escapeHtml(backup.name || backup.id)}</div>
               <div class="muted">${formatDateTime(backup.created_at)}</div>
-              <div class="muted">World: ${backup.world || "-"} | Mods: ${backup.mods_active ?? "-"} | Version: ${backup.server_version || "-"}</div>
+              <div class="muted">World: ${escapeHtml(backup.world || "-")} | Mods: ${backup.mods_active ?? "-"} | Version: ${escapeHtml(backup.server_version || "-")}</div>
+              <div class="muted">ID: ${escapeHtml(backup.id || "-")}</div>
             </div>
             <button data-action="restore-backup" data-id="${selectedServer.id}" data-backup-id="${backup.id}">Restore</button>
           </div>
-        `).join("")}
+        `).join("") || '<div class="muted">No backups match this filter.</div>'}
         <div class="muted">Restore history</div>
-        ${(restoreHistory || []).slice(0, 5).map((entry) => `
-          <div class="muted">${formatDateTime(entry.restored_at)} ${String(entry.status || "unknown").toUpperCase()} restore ${entry.backup_id}${entry.safety_backup_id ? ` | safety ${entry.safety_backup_id}` : ""}${entry.error ? ` | ${entry.error}` : ""}</div>
+        ${(restoreHistory || []).map((entry) => `
+          <div class="event-row">
+            <div><strong>${escapeHtml(String(entry.status || "unknown").toUpperCase())}</strong> ${escapeHtml(entry.backup_id || "-")}</div>
+            <div class="muted">${formatDateTime(entry.restored_at)}${entry.safety_backup_id ? ` | Safety: ${escapeHtml(entry.safety_backup_id)}` : ""}${entry.error ? ` | ${escapeHtml(entry.error)}` : ""}</div>
+          </div>
         `).join("") || '<div class="muted">No restores yet.</div>'}
       </article>
     `;
@@ -785,6 +923,14 @@ async function loadBackups() {
   if (serverSelect) {
     serverSelect.addEventListener("change", async (event) => {
       selectedBackupsServerId = String(event.target.value || "");
+      await loadBackups();
+    });
+  }
+
+  const backupFilterInput = document.getElementById("backupFilterInput");
+  if (backupFilterInput) {
+    backupFilterInput.addEventListener("input", async (event) => {
+      backupsFilterText = String(event.target.value || "");
       await loadBackups();
     });
   }
@@ -814,8 +960,12 @@ async function loadBackups() {
       if (!serverId || !backupId) {
         return;
       }
-      const confirmed = window.confirm("Restore this backup? A safety backup will be created first.");
-      if (!confirmed) {
+      const typed = window.prompt(`Type the backup ID to confirm restore:\n${backupId}`);
+      if (typed === null) {
+        return;
+      }
+      if (typed.trim() !== backupId) {
+        showMessage("Backup ID did not match. Restore was canceled.", true);
         return;
       }
       try {
@@ -837,6 +987,16 @@ async function loadBackups() {
 
 function setView(view) {
   currentView = view;
+
+  if (jobsAutoRefreshTimer) {
+    clearInterval(jobsAutoRefreshTimer);
+    jobsAutoRefreshTimer = null;
+  }
+  if (playersAutoRefreshTimer) {
+    clearInterval(playersAutoRefreshTimer);
+    playersAutoRefreshTimer = null;
+  }
+
   document.getElementById("serversCard").classList.toggle("hidden", view !== "servers");
   document.getElementById("gamesCard").classList.toggle("hidden", view !== "games");
   document.getElementById("jobsCard").classList.toggle("hidden", view !== "jobs");
@@ -844,6 +1004,21 @@ function setView(view) {
   document.getElementById("modsCard").classList.toggle("hidden", view !== "mods");
   document.getElementById("backupsCard").classList.toggle("hidden", view !== "backups");
   document.getElementById("invitationsCard").classList.toggle("hidden", view !== "invitations");
+
+  if (view === "jobs") {
+    jobsAutoRefreshTimer = setInterval(() => {
+      loadJobs().catch(() => {
+        // no-op
+      });
+    }, 5000);
+  }
+  if (view === "players") {
+    playersAutoRefreshTimer = setInterval(() => {
+      loadPlayers().catch(() => {
+        // no-op
+      });
+    }, 5000);
+  }
 }
 
 async function refreshCurrentView() {
@@ -1087,6 +1262,7 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   if (serversTimer) clearInterval(serversTimer);
   if (logTimer) clearInterval(logTimer);
   if (jobsAutoRefreshTimer) clearInterval(jobsAutoRefreshTimer);
+  if (playersAutoRefreshTimer) clearInterval(playersAutoRefreshTimer);
   document.getElementById("navCard").classList.add("hidden");
   document.getElementById("serversCard").classList.add("hidden");
   document.getElementById("gamesCard").classList.add("hidden");
@@ -1191,6 +1367,30 @@ document.getElementById("refreshJobsBtn").addEventListener("click", async () => 
 document.getElementById("refreshInvitationsBtn").addEventListener("click", async () => {
   try {
     await loadInvitations();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("refreshPlayersBtn").addEventListener("click", async () => {
+  try {
+    await loadPlayers();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("refreshModsBtn").addEventListener("click", async () => {
+  try {
+    await loadMods();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("refreshBackupsBtn").addEventListener("click", async () => {
+  try {
+    await loadBackups();
   } catch (err) {
     showMessage(String(err.message || err), true);
   }

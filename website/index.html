@@ -47,12 +47,20 @@
     </section>
 
     <section id="modsCard" class="card hidden">
-      <h2>Mods</h2>
+      <div class="row space">
+        <h2>Mods</h2>
+        <button id="refreshModsBtn" class="small">Refresh</button>
+      </div>
+      <div class="muted">Manage server mods, browse the catalog, and apply profiles.</div>
       <div id="mods"></div>
     </section>
 
     <section id="playersCard" class="card hidden">
-      <h2>Players</h2>
+      <div class="row space">
+        <h2>Players</h2>
+        <button id="refreshPlayersBtn" class="small">Refresh</button>
+      </div>
+      <div class="muted">Live player/session view derived from recent server logs.</div>
       <div id="players"></div>
     </section>
 
@@ -71,7 +79,11 @@
     </section>
 
     <section id="backupsCard" class="card hidden">
-      <h2>Backups</h2>
+      <div class="row space">
+        <h2>Backups</h2>
+        <button id="refreshBackupsBtn" class="small">Refresh</button>
+      </div>
+      <div class="muted">Create backups and restore safely with audit history.</div>
       <div id="backups"></div>
     </section>
 

@@ -290,6 +290,7 @@ def test_v1_players_endpoint(monkeypatch):
         "2 / 10 players",
         "Player Oscar connected",
         "Player Player2 connected",
+        "Player Oscar disconnected",
     ])
     response = client.get("/api/v1/servers/valheim-kirken/players", headers={"X-API-Key": "abc123"})
     assert response.status_code == 200
@@ -298,6 +299,10 @@ def test_v1_players_endpoint(monkeypatch):
     assert payload["supported"] is True
     assert payload["online"] >= 0
     assert payload["max"] in {None, 10}
+    assert isinstance(payload.get("sessions"), list)
+    assert isinstance(payload.get("recent_events"), list)
+    assert payload.get("source") == "recent_output"
+    assert payload.get("event_count", 0) >= 1
 
 
 def test_v1_patch_settings(monkeypatch):

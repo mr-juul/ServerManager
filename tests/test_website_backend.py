@@ -148,6 +148,54 @@ def test_invitations_proxy_routes_use_session_identity(portal_client):
     ]
 
 
+def test_players_proxy_route_uses_session_identity(portal_client):
+    client, calls = portal_client
+    client.post("/api/login", json={"user_id": "alice", "password": "correct-password"})
+
+    response = client.get("/api/servers/owned/players")
+
+    assert response.status_code == 200
+    assert calls == [
+        ("alice", "GET", "/api/v1/servers/owned/players", None),
+    ]
+
+
+def test_mods_proxy_routes_use_session_identity(portal_client):
+    client, calls = portal_client
+    client.post("/api/login", json={"user_id": "alice", "password": "correct-password"})
+
+    listing = client.get("/api/mods", params={"game": "valheim"})
+    server_mods = client.get("/api/servers/owned/mods")
+    enable = client.post("/api/servers/owned/mods/mod-1/enable")
+
+    assert listing.status_code == 200
+    assert server_mods.status_code == 200
+    assert enable.status_code == 200
+    assert calls == [
+        ("alice", "GET", "/api/v1/mods?game=valheim", None),
+        ("alice", "GET", "/api/v1/servers/owned/mods", None),
+        ("alice", "POST", "/api/v1/servers/owned/mods/mod-1/enable", {}),
+    ]
+
+
+def test_backups_proxy_routes_use_session_identity(portal_client):
+    client, calls = portal_client
+    client.post("/api/login", json={"user_id": "alice", "password": "correct-password"})
+
+    listing = client.get("/api/servers/owned/backups")
+    create = client.post("/api/servers/owned/backups")
+    restore = client.post("/api/servers/owned/backups/backup-id/restore")
+
+    assert listing.status_code == 200
+    assert create.status_code == 200
+    assert restore.status_code == 200
+    assert calls == [
+        ("alice", "GET", "/api/v1/servers/owned/backups", None),
+        ("alice", "POST", "/api/v1/servers/owned/backups", {}),
+        ("alice", "POST", "/api/v1/servers/owned/backups/backup-id/restore", {}),
+    ]
+
+
 def test_server_manager_client_preserves_structured_http_errors(monkeypatch):
     from website_backend.server_manager_client import ServerManagerClientError
 

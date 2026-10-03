@@ -663,9 +663,20 @@ class _WebControlBackend:
         config, process = self._get_server_or_404(server_id)
         definition = game_definition(config.game)
         if not definition.web_players_supported:
-            return {"supported": False, "players": [], "online": None, "max": None}
+            return {
+                "supported": False,
+                "players": [],
+                "online": None,
+                "max": None,
+                "sessions": [],
+                "recent_events": [],
+                "event_count": 0,
+                "source": "unsupported",
+            }
 
         players: set[str] = set()
+        sessions: dict[str, dict[str, Any]] = {}
+        events: list[dict[str, Any]] = []
         if config.game == "valheim":
             joined_patterns = [
                 re.compile(r"Got character .* from\s+([\w\-\. ]{2,32})\s*:\s*", re.IGNORECASE),
@@ -685,16 +696,46 @@ class _WebControlBackend:
                 re.compile(r"\[leave\]\s+([\w\-\. ]{2,32})", re.IGNORECASE),
             ]
 
-        for line in process.recent_output:
+        output = process.recent_output[-800:]
+        for line_index, line in enumerate(output):
             text = str(line)
+            matched_join = False
             for pattern in joined_patterns:
                 match = pattern.search(text)
                 if match:
-                    players.add(match.group(1).strip())
+                    player_name = match.group(1).strip()
+                    if player_name:
+                        players.add(player_name)
+                        session = sessions.get(player_name, {
+                            "player": player_name,
+                            "joined_line": line_index,
+                            "last_seen_line": line_index,
+                        })
+                        session["last_seen_line"] = line_index
+                        session.setdefault("joined_line", line_index)
+                        sessions[player_name] = session
+                        events.append({"event": "joined", "player": player_name, "line": line_index})
+                    matched_join = True
+                    break
+            if matched_join:
+                continue
+
             for pattern in left_patterns:
                 match = pattern.search(text)
                 if match:
-                    players.discard(match.group(1).strip())
+                    player_name = match.group(1).strip()
+                    if player_name:
+                        players.discard(player_name)
+                        session = sessions.get(player_name, {
+                            "player": player_name,
+                            "joined_line": None,
+                            "last_seen_line": line_index,
+                        })
+                        session["left_line"] = line_index
+                        session["last_seen_line"] = line_index
+                        sessions[player_name] = session
+                        events.append({"event": "left", "player": player_name, "line": line_index})
+                    break
 
         online = len(players)
         max_players = None
@@ -703,7 +744,7 @@ class _WebControlBackend:
             re.compile(r"players\s*[:=]\s*(\d{1,3})\s*/\s*(\d{1,3})", re.IGNORECASE),
             re.compile(r"online\s*[:=]\s*(\d{1,3})\s*/\s*(\d{1,3})", re.IGNORECASE),
         ]
-        for line in reversed(process.recent_output):
+        for line in reversed(output):
             text = str(line)
             for pattern in count_patterns:
                 match = pattern.search(text)
@@ -718,7 +759,33 @@ class _WebControlBackend:
                 break
 
         result = sorted(name for name in players if name)
-        return {"supported": True, "players": result, "online": online, "max": max_players}
+        online_sessions = []
+        for player_name in result:
+            session = sessions.get(player_name, {"player": player_name, "joined_line": None, "last_seen_line": None})
+            joined_line = session.get("joined_line")
+            last_seen_line = session.get("last_seen_line")
+            line_span = None
+            if isinstance(joined_line, int) and isinstance(last_seen_line, int):
+                line_span = max(0, last_seen_line - joined_line)
+            online_sessions.append(
+                {
+                    "player": player_name,
+                    "joined_line": joined_line,
+                    "last_seen_line": last_seen_line,
+                    "line_span": line_span,
+                }
+            )
+
+        return {
+            "supported": True,
+            "players": result,
+            "online": online,
+            "max": max_players,
+            "sessions": online_sessions,
+            "recent_events": events[-20:],
+            "event_count": len(events),
+            "source": "recent_output",
+        }
 
     def _server_backup_root(self, config: ServerConfig) -> Path | None:
         source = str(config.world_directory or config.backup.source or "").strip()
