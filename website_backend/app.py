@@ -33,9 +33,15 @@ website_root = Path(__file__).resolve().parents[1] / "website"
 sessions: dict[str, dict[str, object]] = {}
 
 if website_root.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(website_root / "assets")), name="assets")
-    app.mount("/css", StaticFiles(directory=str(website_root / "css")), name="css")
-    app.mount("/js", StaticFiles(directory=str(website_root / "js")), name="js")
+    mounts = (
+        ("/assets", "assets"),
+        ("/css", "css"),
+        ("/js", "js"),
+    )
+    for route, folder in mounts:
+        directory = website_root / folder
+        if directory.is_dir():
+            app.mount(route, StaticFiles(directory=str(directory)), name=folder)
 
 
 def _purge_sessions() -> None:
