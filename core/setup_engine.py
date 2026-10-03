@@ -4,6 +4,7 @@ import os
 import webbrowser
 from dataclasses import dataclass, field
 
+from .game_detection import detect_game
 from .game_detection import _steam_libraries
 from .games import GameDefinition
 
@@ -46,32 +47,20 @@ class GameSetupEngine:
         self.definition = definition
 
     def evaluate(self) -> SetupResult:
+        status = detect_game(self.definition)
         issues: list[SetupIssue] = []
-        libraries = _steam_libraries()
-        if libraries:
-            issues.append(SetupIssue("Steam", "ok", "Steam libraries detected: " + ", ".join(str(path) for path in libraries[:3])))
-        else:
-            issues.append(SetupIssue("Steam", "warning", "Steam not detected. Install Steam or add a library folder."))
 
-        if self.definition.requires_java:
-            import shutil
-            java = shutil.which("java")
-            if java:
-                issues.append(SetupIssue("Java", "ok", java))
-            else:
-                issues.append(SetupIssue("Java", "warning", "Java is required for this game."))
-        else:
-            issues.append(SetupIssue("Prerequisites", "ok", "No extra dependencies required."))
+        for check in status.checks:
+            issues.append(SetupIssue(check.label, check.state, check.detail))
 
-        if self.definition.steam_app_id:
+        if not issues:
+            libraries = _steam_libraries()
             if libraries:
-                issues.append(SetupIssue("Dedicated server", "warning", f"Steam App ID {self.definition.steam_app_id} has not been installed yet."))
+                issues.append(SetupIssue("Steam", "ok", "Steam libraries detected: " + ", ".join(str(path) for path in libraries[:3])))
             else:
-                issues.append(SetupIssue("Dedicated server", "warning", "Steam is required before dedicated server installation."))
-        else:
-            issues.append(SetupIssue("Dedicated server", "ok", "No dedicated server install required."))
+                issues.append(SetupIssue("Steam", "warning", "Steam not detected. Install Steam or add a library folder."))
 
-        ready = all(issue.state == "ok" for issue in issues)
+        ready = status.state == "READY"
         return SetupResult(self.definition, ready, issues)
 
     def default_server_payload(self) -> dict[str, object]:

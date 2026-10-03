@@ -6,6 +6,7 @@ import secrets
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -29,7 +30,7 @@ def _build_client() -> ServerManagerClient:
 app = FastAPI(title="Server Manager Website Backend", docs_url=None, redoc_url=None, openapi_url=None)
 client = _build_client()
 website_root = Path(__file__).resolve().parents[1] / "website"
-sessions: dict[str, float] = {}
+sessions: dict[str, dict[str, object]] = {}
 
 if website_root.is_dir():
     app.mount("/assets", StaticFiles(directory=str(website_root / "assets")), name="assets")
@@ -39,36 +40,41 @@ if website_root.is_dir():
 
 def _purge_sessions() -> None:
     now = time.time()
-    expired = [token for token, expires in sessions.items() if expires <= now]
+    expired = [token for token, session in sessions.items() if float(session["expires"]) <= now]
     for token in expired:
         sessions.pop(token, None)
 
 
-def _session_ok(request: Request) -> bool:
+def _session_user_id(request: Request) -> str | None:
     _purge_sessions()
     token = request.cookies.get(SESSION_COOKIE, "")
-    return bool(token and token in sessions)
+    session = sessions.get(token)
+    return str(session["user_id"]) if session else None
 
 
-def _set_session(response: Response) -> None:
+def _set_session(response: Response, user_id: str) -> None:
     token = secrets.token_urlsafe(32)
-    sessions[token] = time.time() + SESSION_TTL_SECONDS
+    sessions[token] = {"user_id": user_id, "expires": time.time() + SESSION_TTL_SECONDS}
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax")
 
 
-def _clear_session(response: Response) -> None:
+def _clear_session(request: Request, response: Response) -> None:
+    token = request.cookies.get(SESSION_COOKIE, "")
+    sessions.pop(token, None)
     response.delete_cookie(SESSION_COOKIE)
 
 
-async def _require_session(request: Request) -> None:
-    if not _session_ok(request):
+async def _require_session(request: Request) -> ServerManagerClient:
+    user_id = _session_user_id(request)
+    if not user_id:
         raise HTTPException(status_code=401, detail="unauthorized")
+    return replace(client, user_id=user_id)
 
 
-def _verify_password_against_server_manager(password: str) -> bool:
+def _verify_password_against_server_manager(user_id: str, password: str) -> bool:
     # Validate against existing Server Manager auth without exposing secrets to frontend JS.
     endpoint = os.environ.get("SM_API_BASE_URL", "http://127.0.0.1:8080").rstrip("/") + "/api/auth/login"
-    body = json.dumps({"password": password}).encode("utf-8")
+    body = json.dumps({"user_id": user_id, "password": password}).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
         method="POST",
@@ -105,27 +111,80 @@ async def index():
 @app.post("/api/login")
 async def login(request: Request):
     body = await request.json()
+    user_id = str((body or {}).get("user_id", "")).strip()
     password = str((body or {}).get("password", ""))
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id_required")
     if not password:
         raise HTTPException(status_code=400, detail="password_required")
-    if not _verify_password_against_server_manager(password):
+    if not _verify_password_against_server_manager(user_id, password):
         raise HTTPException(status_code=401, detail="invalid_credentials")
     response = JSONResponse({"success": True})
-    _set_session(response)
+    _set_session(response, user_id)
     return response
 
 
 @app.post("/api/logout")
-async def logout(_request: Request):
+async def logout(request: Request):
     response = JSONResponse({"success": True})
-    _clear_session(response)
+    _clear_session(request, response)
     return response
 
 
 @app.get("/api/status")
 async def status(_session=Depends(_require_session)):
     try:
-        return client.get_status()
+        return _session.get_status()
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/me")
+async def me(_session=Depends(_require_session)):
+    try:
+        return _session.get_me()
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/users")
+async def users(_session=Depends(_require_session)):
+    try:
+        return _session.get_users()
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/users")
+async def create_user(request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    try:
+        return _session.create_user(body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/invitations")
+async def invitations(request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    try:
+        return _session.create_invitation(body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/invitations")
+async def list_invitations(_session=Depends(_require_session)):
+    try:
+        return _session.get_invitations()
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.delete("/api/invitations/{invitation_id}")
+async def delete_invitation(invitation_id: str, _session=Depends(_require_session)):
+    try:
+        return _session.delete_invitation(invitation_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -133,7 +192,7 @@ async def status(_session=Depends(_require_session)):
 @app.get("/api/servers")
 async def servers(_session=Depends(_require_session)):
     try:
-        return client.get_servers()
+        return _session.get_servers()
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -142,7 +201,19 @@ async def servers(_session=Depends(_require_session)):
 async def create_server(request: Request, _session=Depends(_require_session)):
     body = await request.json()
     try:
-        return client.create_server(body or {})
+        return _session.create_server(body or {})
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.delete("/api/servers/{server_id}")
+async def delete_server(server_id: str, request: Request, _session=Depends(_require_session)):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        return _session.delete_server(server_id, body or {})
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -150,7 +221,31 @@ async def create_server(request: Request, _session=Depends(_require_session)):
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_job(job_id)
+        return _session.get_job(job_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/jobs")
+async def jobs(_session=Depends(_require_session)):
+    try:
+        return _session.get_jobs()
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/tasks")
+async def tasks(_session=Depends(_require_session)):
+    try:
+        return _session.get_tasks()
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/tasks/{task_id}")
+async def task(task_id: str, _session=Depends(_require_session)):
+    try:
+        return _session.get_task(task_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -158,7 +253,35 @@ async def job(job_id: str, _session=Depends(_require_session)):
 @app.get("/api/servers/{server_id}")
 async def server(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_server(server_id)
+        return _session.get_server(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.get("/api/servers/{server_id}/access")
+async def server_access(server_id: str, _session=Depends(_require_session)):
+    try:
+        return _session.get_server_access(server_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/servers/{server_id}/access")
+async def grant_server_access(server_id: str, request: Request, _session=Depends(_require_session)):
+    body = await request.json()
+    user_id = str((body or {}).get("user_id", "")).strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id_required")
+    try:
+        return _session.grant_server_access(server_id, user_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.delete("/api/servers/{server_id}/access/{user_id}")
+async def revoke_server_access(server_id: str, user_id: str, _session=Depends(_require_session)):
+    try:
+        return _session.revoke_server_access(server_id, user_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -166,7 +289,7 @@ async def server(server_id: str, _session=Depends(_require_session)):
 @app.get("/api/servers/{server_id}/players")
 async def players(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_players(server_id)
+        return _session.get_players(server_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -174,7 +297,7 @@ async def players(server_id: str, _session=Depends(_require_session)):
 @app.get("/api/servers/{server_id}/settings")
 async def server_settings(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_server_settings(server_id)
+        return _session.get_server_settings(server_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -183,7 +306,7 @@ async def server_settings(server_id: str, _session=Depends(_require_session)):
 async def patch_server_settings(server_id: str, request: Request, _session=Depends(_require_session)):
     body = await request.json()
     try:
-        return client.patch_server_settings(server_id, body or {})
+        return _session.patch_server_settings(server_id, body or {})
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -191,7 +314,7 @@ async def patch_server_settings(server_id: str, request: Request, _session=Depen
 @app.get("/api/games")
 async def games(_session=Depends(_require_session)):
     try:
-        return client.get_games()
+        return _session.get_games()
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -199,7 +322,7 @@ async def games(_session=Depends(_require_session)):
 @app.get("/api/games/{game_id}")
 async def game(game_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_game(game_id)
+        return _session.get_game(game_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -207,7 +330,7 @@ async def game(game_id: str, _session=Depends(_require_session)):
 @app.get("/api/games/{game_id}/create-schema")
 async def create_schema(game_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_create_schema(game_id)
+        return _session.get_create_schema(game_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -215,7 +338,15 @@ async def create_schema(game_id: str, _session=Depends(_require_session)):
 @app.get("/api/games/{game_id}/worlds")
 async def worlds(game_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_worlds(game_id)
+        return _session.get_worlds(game_id)
+    except ServerManagerClientError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
+
+
+@app.post("/api/games/{game_id}/setup")
+async def setup_game(game_id: str, _session=Depends(_require_session)):
+    try:
+        return _session.setup_game(game_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -223,7 +354,7 @@ async def worlds(game_id: str, _session=Depends(_require_session)):
 @app.get("/api/mods")
 async def mods(game: str = "", _session=Depends(_require_session)):
     try:
-        return client.get_mods(game=game)
+        return _session.get_mods(game=game)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -231,7 +362,7 @@ async def mods(game: str = "", _session=Depends(_require_session)):
 @app.get("/api/mods/{mod_id}")
 async def mod(mod_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_mod(mod_id)
+        return _session.get_mod(mod_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -239,7 +370,7 @@ async def mod(mod_id: str, _session=Depends(_require_session)):
 @app.get("/api/servers/{server_id}/mods")
 async def server_mods(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_server_mods(server_id)
+        return _session.get_server_mods(server_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -247,7 +378,7 @@ async def server_mods(server_id: str, _session=Depends(_require_session)):
 @app.post("/api/servers/{server_id}/mods/{mod_id}/enable")
 async def enable_mod(server_id: str, mod_id: str, _session=Depends(_require_session)):
     try:
-        return client.enable_mod(server_id, mod_id)
+        return _session.enable_mod(server_id, mod_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -255,7 +386,7 @@ async def enable_mod(server_id: str, mod_id: str, _session=Depends(_require_sess
 @app.post("/api/servers/{server_id}/mods/{mod_id}/disable")
 async def disable_mod(server_id: str, mod_id: str, _session=Depends(_require_session)):
     try:
-        return client.disable_mod(server_id, mod_id)
+        return _session.disable_mod(server_id, mod_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -263,7 +394,7 @@ async def disable_mod(server_id: str, mod_id: str, _session=Depends(_require_ses
 @app.post("/api/servers/{server_id}/mods/{mod_id}/install")
 async def install_mod(server_id: str, mod_id: str, _session=Depends(_require_session)):
     try:
-        return client.install_mod(server_id, mod_id)
+        return _session.install_mod(server_id, mod_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -271,7 +402,7 @@ async def install_mod(server_id: str, mod_id: str, _session=Depends(_require_ses
 @app.post("/api/servers/{server_id}/mods/{mod_id}/uninstall")
 async def uninstall_mod(server_id: str, mod_id: str, _session=Depends(_require_session)):
     try:
-        return client.uninstall_mod(server_id, mod_id)
+        return _session.uninstall_mod(server_id, mod_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -279,7 +410,7 @@ async def uninstall_mod(server_id: str, mod_id: str, _session=Depends(_require_s
 @app.get("/api/mod-profiles")
 async def mod_profiles(game: str = "", _session=Depends(_require_session)):
     try:
-        return client.get_mod_profiles(game=game)
+        return _session.get_mod_profiles(game=game)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -289,7 +420,7 @@ async def apply_mod_profile(server_id: str, request: Request, _session=Depends(_
     body = await request.json()
     profile = str((body or {}).get("profile") or "")
     try:
-        return client.apply_mod_profile(server_id, profile)
+        return _session.apply_mod_profile(server_id, profile)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -297,7 +428,7 @@ async def apply_mod_profile(server_id: str, request: Request, _session=Depends(_
 @app.get("/api/servers/{server_id}/backups")
 async def backups(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.get_backups(server_id)
+        return _session.get_backups(server_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -305,7 +436,7 @@ async def backups(server_id: str, _session=Depends(_require_session)):
 @app.post("/api/servers/{server_id}/backups")
 async def create_backup(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.create_backup(server_id)
+        return _session.create_backup(server_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -313,7 +444,7 @@ async def create_backup(server_id: str, _session=Depends(_require_session)):
 @app.post("/api/servers/{server_id}/backups/{backup_id}/restore")
 async def restore_backup(server_id: str, backup_id: str, _session=Depends(_require_session)):
     try:
-        return client.restore_backup(server_id, backup_id)
+        return _session.restore_backup(server_id, backup_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -321,7 +452,7 @@ async def restore_backup(server_id: str, backup_id: str, _session=Depends(_requi
 @app.post("/api/servers/{server_id}/start")
 async def start(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.start_server(server_id)
+        return _session.start_server(server_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -329,7 +460,7 @@ async def start(server_id: str, _session=Depends(_require_session)):
 @app.post("/api/servers/{server_id}/stop")
 async def stop(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.stop_server(server_id)
+        return _session.stop_server(server_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -337,7 +468,7 @@ async def stop(server_id: str, _session=Depends(_require_session)):
 @app.post("/api/servers/{server_id}/restart")
 async def restart(server_id: str, _session=Depends(_require_session)):
     try:
-        return client.restart_server(server_id)
+        return _session.restart_server(server_id)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})
 
@@ -345,6 +476,6 @@ async def restart(server_id: str, _session=Depends(_require_session)):
 @app.get("/api/servers/{server_id}/logs")
 async def logs(server_id: str, cursor: int = 0, limit: int = 200, _session=Depends(_require_session)):
     try:
-        return client.get_logs(server_id, cursor=cursor, limit=limit)
+        return _session.get_logs(server_id, cursor=cursor, limit=limit)
     except ServerManagerClientError as exc:
         return JSONResponse(status_code=exc.status_code, content={"success": False, "error": exc.error, "message": exc.message})

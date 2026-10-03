@@ -19,6 +19,7 @@ class ServerManagerClient:
     base_url: str
     api_key: str
     timeout: int = 15
+    user_id: str | None = None
 
     def _call(self, method: str, path: str, payload: dict | None = None) -> dict:
         data = None
@@ -26,6 +27,8 @@ class ServerManagerClient:
             "Accept": "application/json",
             "X-API-Key": self.api_key,
         }
+        if self.user_id:
+            headers["X-SM-User"] = self.user_id
         if payload is not None:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -41,14 +44,16 @@ class ServerManagerClient:
             parsed = json.loads(body or "{}")
         except urllib.error.HTTPError as exc:
             try:
-                payload = json.loads(exc.read().decode("utf-8"))
-                raise ServerManagerClientError(
-                    error=str(payload.get("error", "server_manager_error")),
-                    message=str(payload.get("message", "Request failed")),
-                    status_code=exc.code,
-                ) from exc
-            except Exception:
-                raise ServerManagerClientError("server_manager_error", f"HTTP {exc.code} from Server Manager", exc.code) from exc
+                error_payload = json.loads(exc.read().decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                error_payload = {}
+            if not isinstance(error_payload, dict):
+                error_payload = {}
+            raise ServerManagerClientError(
+                error=str(error_payload.get("error", "server_manager_error")),
+                message=str(error_payload.get("message", f"HTTP {exc.code} from Server Manager")),
+                status_code=exc.code,
+            ) from exc
         except urllib.error.URLError as exc:
             raise ServerManagerClientError("server_manager_offline", "Server Manager is offline.", 503) from exc
         except json.JSONDecodeError as exc:
@@ -65,17 +70,56 @@ class ServerManagerClient:
     def get_status(self) -> dict:
         return self._call("GET", "/api/v1/status")
 
+    def get_me(self) -> dict:
+        return self._call("GET", "/api/v1/me")
+
+    def get_users(self) -> dict:
+        return self._call("GET", "/api/v1/users")
+
+    def create_user(self, payload: dict) -> dict:
+        return self._call("POST", "/api/v1/users", payload=payload)
+
+    def create_invitation(self, payload: dict) -> dict:
+        return self._call("POST", "/api/v1/invitations", payload=payload)
+
+    def get_invitations(self) -> dict:
+        return self._call("GET", "/api/v1/invitations")
+
+    def delete_invitation(self, invitation_id: str) -> dict:
+        return self._call("DELETE", f"/api/v1/invitations/{invitation_id}")
+
     def get_servers(self) -> dict:
         return self._call("GET", "/api/v1/servers")
 
     def get_server(self, server_id: str) -> dict:
         return self._call("GET", f"/api/v1/servers/{server_id}")
 
+    def get_server_access(self, server_id: str) -> dict:
+        return self._call("GET", f"/api/v1/servers/{server_id}/access")
+
+    def grant_server_access(self, server_id: str, user_id: str) -> dict:
+        return self._call("POST", f"/api/v1/servers/{server_id}/access", payload={"user_id": user_id})
+
+    def revoke_server_access(self, server_id: str, user_id: str) -> dict:
+        return self._call("DELETE", f"/api/v1/servers/{server_id}/access/{user_id}")
+
     def create_server(self, payload: dict) -> dict:
         return self._call("POST", "/api/v1/servers", payload=payload)
 
     def get_job(self, job_id: str) -> dict:
         return self._call("GET", f"/api/v1/jobs/{job_id}")
+
+    def delete_server(self, server_id: str, payload: dict) -> dict:
+        return self._call("DELETE", f"/api/v1/servers/{server_id}", payload=payload)
+
+    def get_jobs(self) -> dict:
+        return self._call("GET", "/api/v1/jobs")
+
+    def get_tasks(self) -> dict:
+        return self._call("GET", "/api/v1/tasks")
+
+    def get_task(self, task_id: str) -> dict:
+        return self._call("GET", f"/api/v1/tasks/{task_id}")
 
     def start_server(self, server_id: str) -> dict:
         return self._call("POST", f"/api/v1/servers/{server_id}/start", payload={})
@@ -106,6 +150,9 @@ class ServerManagerClient:
 
     def get_create_schema(self, game_id: str) -> dict:
         return self._call("GET", f"/api/v1/games/{game_id}/create-schema")
+
+    def setup_game(self, game_id: str) -> dict:
+        return self._call("POST", f"/api/v1/games/{game_id}/setup", payload={})
 
     def get_worlds(self, game_id: str) -> dict:
         return self._call("GET", f"/api/v1/games/{game_id}/worlds")

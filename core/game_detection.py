@@ -68,12 +68,16 @@ def detect_game(definition: GameDefinition, configured_paths: list[Path] | None 
         for library in steam:
             candidates.extend([library / "steamapps" / "common", library / "steamapps" / "common" / definition.display_name])
     found = None
-    for candidate in candidates:
-        if not candidate.is_dir(): continue
-        if not definition.server_search_names or any((candidate / name).exists() for name in definition.server_search_names):
-            found = candidate; break
     if definition.server_search_names:
+        for candidate in candidates:
+            if not candidate.is_dir():
+                continue
+            if any((candidate / name).exists() for name in definition.server_search_names):
+                found = candidate
+                break
         checks.append(CheckResult("Dedicated server", "ok" if found else "warning", "Installed" if found else "Needs setup"))
+    else:
+        checks.append(CheckResult("Dedicated server", "warning", "Automatic detection is not available for this game yet."))
     state = "READY" if all(check.state == "ok" for check in checks if check.label != "Support") else "WARNING"
     if not definition.supported: state = "ERROR"
     return GameStatus(definition, state, checks, found)

@@ -3,10 +3,11 @@ from core.games import game_definition, game_public_payload
 from core.setup_engine import GameSetupEngine
 
 
-def test_generic_game_is_ready_without_fake_installation():
+def test_generic_game_requires_setup_without_detectable_server_signature():
     status = detect_game(game_definition("generic"))
-    assert status.state == "READY"
+    assert status.state == "WARNING"
     assert status.definition.id == "generic"
+    assert any(check.label == "Dedicated server" and check.state == "warning" for check in status.checks)
 
 
 def test_valheim_detection_checks_configured_server_files(tmp_path):

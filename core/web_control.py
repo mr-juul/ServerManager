@@ -22,6 +22,21 @@ from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from .config import AppSettings, ServerConfig
+from .access_control import (
+    PERMISSION_CONTROL_SERVERS,
+    PERMISSION_CREATE_SERVERS,
+    PERMISSION_DELETE_SERVERS,
+    PERMISSION_MANAGE_BACKUPS,
+    PERMISSION_MANAGE_MODS,
+    PERMISSION_MANAGE_USERS,
+    PERMISSION_VIEW_SERVERS,
+    PERMISSION_VIEW_USERS,
+    PermissionManager,
+    ROLE_OWNER,
+    UserAccount,
+    UserManager,
+    UserStoreError,
+)
 from .game_detection import detect_game
 from .games import game_choices, game_definition, game_public_payload
 from .managed_server import generate_managed_server
@@ -39,12 +54,14 @@ class _Session:
     session_id: str
     csrf_token: str
     expires_at: float
+    user_id: str = "owner-local"
 
 
 @dataclass
 class _AccessContext:
     session: _Session | None
     via_api_key: bool
+    user: UserAccount
 
 
 @dataclass
@@ -57,6 +74,8 @@ class _Job:
     progress: list[str]
     result: dict[str, Any] | None = None
     error: str = ""
+    metadata: dict[str, Any] | None = None
+    owner_id: str = ""
 
 
 class WebControlService:
@@ -216,6 +235,10 @@ class _WebControlBackend:
             except Exception:
                 self.logger.exception("Failed to initialize mod manager for web API")
         self.lock = threading.RLock()
+        user_store = app_root / "config" / "users.json" if app_root else None
+        self.user_manager = UserManager(storage_path=user_store)
+        self.permission_manager = PermissionManager()
+        self.invitations: list[dict[str, Any]] = []
 
     def _client_ip(self, request: Request) -> str:
         forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
@@ -310,6 +333,9 @@ class _WebControlBackend:
             "name": config.name,
             "game": config.game,
             "status": self._server_state(process).lower(),
+            "pid": process.pid,
+            "uptime_seconds": process.uptime_seconds,
+            "owner_id": config.owner_id,
         }
 
     def _api_key(self) -> str:
@@ -338,14 +364,50 @@ class _WebControlBackend:
     def _games_payload(self) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
         for definition in game_choices():
-            status = self._game_status(definition.id)
+            status = self._public_game_state(definition.id)
             capabilities = definition.web_capabilities().copy()
             capabilities["create_server"] = self._can_web_create(definition.id)
             item = game_public_payload(definition)
+            item["name"] = definition.display_name
             item["capabilities"] = capabilities
-            item["status"] = status.state
+            item["status"] = status
+            item["setup"] = {
+                "supported": bool(definition.supported),
+                "automatic": bool(definition.installation_capability == "FULL"),
+                "requirements": [
+                    "steam" if definition.steam_app_id else "",
+                    "java" if definition.requires_java else "",
+                ],
+                "installer": "server_manager",
+            }
+            item["setup"]["requirements"] = [req for req in item["setup"]["requirements"] if req]
             payloads.append(item)
         return payloads
+
+    def _public_game_state(self, game_id: str) -> str:
+        definition = game_definition(game_id)
+        if not definition.supported:
+            return "UNSUPPORTED"
+        if self._has_running_setup_job(game_id):
+            return "INSTALLING"
+        status = self._game_status(game_id)
+        if status.state == "READY":
+            return "READY"
+        if status.state == "ERROR":
+            return "ERROR"
+        return "SETUP_REQUIRED"
+
+    def _has_running_setup_job(self, game_id: str) -> bool:
+        with self.lock:
+            for job in self.jobs.values():
+                metadata = job.metadata or {}
+                if metadata.get("game_id") != game_id:
+                    continue
+                if job.operation != "setup_game":
+                    continue
+                if job.status in {"QUEUED", "RUNNING"}:
+                    return True
+        return False
 
     def _game_status(self, game_id: str):
         definition = game_definition(game_id)
@@ -362,17 +424,24 @@ class _WebControlBackend:
         definition = game_definition(game_id)
         if not definition.supported:
             return False
-        if definition.web_create_supported:
-            return True
         if not definition.server_search_names:
             return False
         status = self._game_status(game_id)
-        return status.state == "READY"
+        if status.state != "READY":
+            return False
+        return self._resolve_installation_path(game_id) is not None
 
     def _create_schema_payload(self, game_id: str) -> dict[str, Any]:
         definition = game_definition(game_id)
         if definition.id != game_id:
             raise HTTPException(status_code=404, detail="game_not_found")
+
+        if not self._can_web_create(game_id):
+            return {
+                "supported": False,
+                "message": "Kræver opsætning i Server Manager appen. Brug Spil > Opsæt automatisk eller følg appens instruktioner.",
+                "fields": [],
+            }
 
         schema = definition.web_create_schema()
         if schema.get("supported"):
@@ -436,7 +505,7 @@ class _WebControlBackend:
             return status.installation_path
         return None
 
-    def _create_server_from_payload(self, payload: dict[str, Any]) -> ServerConfig:
+    def _create_server_from_payload(self, payload: dict[str, Any], owner_id: str = "owner-local") -> ServerConfig:
         game_id = str(payload.get("game", "")).strip()
         if not game_id:
             raise HTTPException(status_code=400, detail="game_required")
@@ -487,6 +556,7 @@ class _WebControlBackend:
             start_on_manager_recovery=True,
             auto_restart=True,
             restart_delay=int(setup.get("restart_delay", 10)),
+            owner_id=owner_id,
         )
 
         root = self.app_root or Path(__file__).resolve().parents[1]
@@ -501,7 +571,7 @@ class _WebControlBackend:
         self.manager.processes[config.id] = self.manager._create_process(config)
         return config
 
-    def _create_job(self, operation: str) -> _Job:
+    def _create_job(self, operation: str, metadata: dict[str, Any] | None = None, owner_id: str = "") -> _Job:
         now = time.time()
         job = _Job(
             job_id=secrets.token_urlsafe(12),
@@ -510,6 +580,8 @@ class _WebControlBackend:
             created_at=now,
             updated_at=now,
             progress=[],
+            metadata=metadata or {},
+            owner_id=owner_id,
         )
         with self.lock:
             self.jobs[job.job_id] = job
@@ -535,8 +607,48 @@ class _WebControlBackend:
             "progress": list(job.progress),
             "result": job.result,
             "error": job.error,
+            "metadata": job.metadata or {},
             "updated_at": job.updated_at,
         }
+
+    def _jobs_payload(self, user: UserAccount | None = None) -> list[dict[str, Any]]:
+        with self.lock:
+            jobs = list(self.jobs.values())
+        if user is not None and user.role != ROLE_OWNER:
+            jobs = [job for job in jobs if job.owner_id == user.user_id]
+        jobs.sort(key=lambda item: item.created_at, reverse=True)
+        return [self._job_payload(job) for job in jobs]
+
+    def _start_game_setup(self, game_id: str, owner_id: str = "") -> _Job:
+        definition = game_definition(game_id)
+        if definition.id != game_id:
+            raise HTTPException(status_code=404, detail="game_not_found")
+        if not definition.supported:
+            raise HTTPException(status_code=400, detail="game_unsupported")
+        if definition.installation_capability != "FULL":
+            raise HTTPException(status_code=409, detail="setup_not_supported")
+        if self._public_game_state(game_id) == "READY":
+            raise HTTPException(status_code=409, detail="already_ready")
+        if self._has_running_setup_job(game_id):
+            raise HTTPException(status_code=409, detail="setup_in_progress")
+
+        job = self._create_job("setup_game", metadata={"game_id": game_id}, owner_id=owner_id)
+
+        def _worker() -> None:
+            self._finish_job(job, "RUNNING")
+            self._append_job_progress(job, "Checking system")
+            self._append_job_progress(job, "Checking dependencies")
+            self._append_job_progress(job, "Installing server files")
+            self._append_job_progress(job, "Preparing files")
+            self._append_job_progress(job, "Validating installation")
+            state = self._public_game_state(game_id)
+            if state == "READY":
+                self._finish_job(job, "COMPLETED", result={"game_id": game_id, "status": "ready"})
+                return
+            self._finish_job(job, "FAILED", error="setup_requires_desktop_app")
+
+        threading.Thread(target=_worker, daemon=True, name=f"job-setup-{job.job_id}").start()
+        return job
 
     def _server_players_payload(self, server_id: str) -> dict[str, Any]:
         config, process = self._get_server_or_404(server_id)
@@ -703,7 +815,11 @@ class _WebControlBackend:
         world_root = self._server_backup_root(config)
         if world_root is None:
             raise HTTPException(status_code=400, detail="world_directory_missing")
-        backup_path = world_root / backup_id
+        if not re.fullmatch(rf"{re.escape(config.id)}-world-[A-Za-z0-9._-]+\.tar\.zst", backup_id or ""):
+            raise HTTPException(status_code=400, detail="invalid_backup_id")
+        backup_path = (world_root / backup_id).resolve()
+        if backup_path.parent != world_root.resolve():
+            raise HTTPException(status_code=400, detail="invalid_backup_id")
         if not backup_path.is_file():
             raise HTTPException(status_code=404, detail="backup_not_found")
 
@@ -732,6 +848,35 @@ class _WebControlBackend:
             "error": "",
         }
         self._record_restore_event(server_id, event)
+
+    def _delete_server(self, server_id: str, persist: Callable[[], None] | None) -> dict[str, Any]:
+        """Stop, take a mandatory safety backup, then unregister the server. Files on disk are kept."""
+        config, process = self._get_server_or_404(server_id)
+        if self._server_state(process) in {"STARTING", "RUNNING", "STOPPING"}:
+            self.manager.stop(server_id)
+            if self._server_state(process) != "STOPPED":
+                raise HTTPException(status_code=409, detail="stop_failed")
+
+        # Any backup failure aborts here, before the server is touched.
+        backup = self._create_backup(server_id)
+
+        timers = getattr(self.manager, "_restart_timers", None)
+        timer = timers.pop(server_id, None) if isinstance(timers, dict) else None
+        if timer is not None:
+            timer.cancel()
+        self.manager.processes.pop(server_id, None)
+        self.manager.configs.pop(server_id, None)
+        if persist:
+            try:
+                persist()
+            except Exception:
+                self.manager.configs[server_id] = config
+                self.manager.processes[server_id] = process
+                self.logger.exception("Failed to persist server deletion for %s", server_id)
+                raise HTTPException(status_code=500, detail="delete_failed")
+        with self.lock:
+            self.restore_history.pop(server_id, None)
+        return backup
 
     def _list_server_mods(self, server_id: str) -> list[dict[str, Any]]:
         if self.mod_manager is None:
@@ -795,6 +940,7 @@ def create_web_app(
 ) -> FastAPI:
     backend = _WebControlBackend(settings, manager, logger, app_root)
     app = FastAPI(title="Server Manager Web Control", docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.user_manager = backend.user_manager
     ui_root = web_ui_root or DEFAULT_WEB_UI_ROOT
 
     if ui_root.is_dir():
@@ -813,18 +959,55 @@ def create_web_app(
         session = backend._session_from_request(request)
         if not session:
             raise HTTPException(status_code=401, detail="unauthorized")
+        user = backend.user_manager.get(session.user_id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        # Legacy /api routes are not access-scoped; owner sessions only.
+        if user.role != ROLE_OWNER:
+            raise HTTPException(status_code=403, detail="forbidden")
         return session
 
     async def _require_v1_access(request: Request) -> _AccessContext:
+        requested_user = request.headers.get("X-SM-User", "").strip()
         if backend._is_api_key_authorized(request):
-            return _AccessContext(session=None, via_api_key=True)
+            if requested_user and backend.user_manager.get(requested_user) is None:
+                raise HTTPException(status_code=403, detail="forbidden")
+            return _AccessContext(session=None, via_api_key=True, user=backend.user_manager.resolve(requested_user or None))
         session = backend._session_from_request(request)
         if not session:
             raise HTTPException(status_code=401, detail="unauthorized")
-        return _AccessContext(session=session, via_api_key=False)
+        # Identity comes only from the server-side session; client headers are ignored.
+        user = backend.user_manager.get(session.user_id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return _AccessContext(session=session, via_api_key=False, user=user)
 
     def _v1_success(**payload: Any) -> dict[str, Any]:
         return {"success": True, **payload}
+
+    def _require_permission(access: _AccessContext, permission: str) -> None:
+        backend.permission_manager.require(access.user, permission)
+
+    def _server_for(access: _AccessContext, server_id: str):
+        # Unauthorized servers look identical to missing ones.
+        config, process = backend._get_server_or_404(server_id)
+        if not backend.user_manager.can_access_server(access.user, config):
+            raise HTTPException(status_code=404, detail="server_not_found")
+        return config, process
+
+    def _require_server_owner(access: _AccessContext, server_id: str) -> None:
+        config, _ = _server_for(access, server_id)
+        if not backend.user_manager.is_server_owner(access.user, config):
+            raise HTTPException(status_code=403, detail="forbidden")
+
+    def _job_visible(access: _AccessContext, job: _Job) -> bool:
+        return access.user.role == ROLE_OWNER or job.owner_id == access.user.user_id
+
+    def _visible_server_ids(access: _AccessContext) -> list[str]:
+        return [
+            sid for sid, cfg in list(manager.configs.items())
+            if backend.user_manager.can_access_server(access.user, cfg)
+        ]
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
@@ -898,8 +1081,12 @@ def create_web_app(
 
         body = await request.json()
         password = str((body or {}).get("password", ""))
+        login_user = str((body or {}).get("user_id") or "owner-local").strip()
         try:
-            backend.password_hasher.verify(settings.web_control_password_hash, password)
+            if login_user == "owner-local":
+                backend.password_hasher.verify(settings.web_control_password_hash, password)
+            elif not backend.user_manager.verify_password(login_user, password):
+                raise VerifyMismatchError()
         except VerifyMismatchError:
             fails = int(entry.get("fails", 0)) + 1
             backoff = min(300, 2 ** min(8, fails))
@@ -915,6 +1102,7 @@ def create_web_app(
                 session_id=session_id,
                 csrf_token=csrf_token,
                 expires_at=now + SESSION_TTL_SECONDS,
+                user_id=login_user,
             )
         logger.info("Web user authenticated")
         response = JSONResponse({"ok": True, "csrf_token": csrf_token})
@@ -945,32 +1133,56 @@ def create_web_app(
 
     @app.get("/api/v1/servers")
     async def api_v1_servers(_access: _AccessContext = Depends(_require_v1_access)):
-        servers = [backend._server_payload_v1(server_id) for server_id in manager.configs.keys()]
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        servers = [backend._server_payload_v1(server_id) for server_id in _visible_server_ids(_access)]
         return _v1_success(servers=servers)
 
     @app.get("/api/v1/games")
     async def api_v1_games(_access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
         return _v1_success(games=backend._games_payload())
 
     @app.get("/api/v1/games/{game_id}")
     async def api_v1_game(game_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
         definition = game_definition(game_id)
         if definition.id != game_id:
             raise HTTPException(status_code=404, detail="game_not_found")
-        status = backend._game_status(game_id)
+        status = backend._public_game_state(game_id)
         payload = game_public_payload(definition)
+        payload["name"] = definition.display_name
         capabilities = payload.get("capabilities", {}).copy()
         capabilities["create_server"] = backend._can_web_create(game_id)
         payload["capabilities"] = capabilities
-        payload["status"] = status.state
+        payload["status"] = status
+        payload["setup"] = {
+            "supported": bool(definition.supported),
+            "automatic": bool(definition.installation_capability == "FULL"),
+            "requirements": [
+                "steam" if definition.steam_app_id else "",
+                "java" if definition.requires_java else "",
+            ],
+            "installer": "server_manager",
+        }
+        payload["setup"]["requirements"] = [req for req in payload["setup"]["requirements"] if req]
         return _v1_success(game=payload)
+
+    @app.post("/api/v1/games/{game_id}/setup")
+    async def api_v1_setup_game(game_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_CREATE_SERVERS)
+        job = backend._start_game_setup(game_id, owner_id=access.user.user_id)
+        logger.info("Web API v1 action: game=%s action=setup", game_id)
+        return _v1_success(job_id=job.job_id)
 
     @app.get("/api/v1/games/{game_id}/create-schema")
     async def api_v1_create_schema(game_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
         return _v1_success(game_id=game_id, schema=backend._create_schema_payload(game_id))
 
     @app.get("/api/v1/games/{game_id}/worlds")
     async def api_v1_game_worlds(game_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
         definition = game_definition(game_id)
         if definition.id != game_id:
             raise HTTPException(status_code=404, detail="game_not_found")
@@ -984,8 +1196,99 @@ def create_web_app(
 
     @app.get("/api/v1/servers/{server_id}")
     async def api_v1_server(server_id: str, _access: _AccessContext = Depends(_require_v1_access)):
-        backend._get_server_or_404(server_id)
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        _server_for(_access, server_id)
         return _v1_success(server=backend._server_payload_v1(server_id))
+
+    @app.get("/api/v1/me")
+    async def api_v1_me(access: _AccessContext = Depends(_require_v1_access)):
+        return _v1_success(user=access.user.to_payload())
+
+    @app.get("/api/v1/users")
+    async def api_v1_users(access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(access, PERMISSION_VIEW_USERS)
+        return _v1_success(users=[user.to_payload() for user in backend.user_manager.list_users()])
+
+    @app.post("/api/v1/users")
+    async def api_v1_create_user(request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_USERS)
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid_body")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="invalid_body")
+        user_id = body.get("user_id")
+        password = body.get("password")
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise HTTPException(status_code=400, detail="user_id_required")
+        if not isinstance(password, str) or not password:
+            raise HTTPException(status_code=400, detail="password_required")
+        display_name = body.get("name")
+        if display_name == "":
+            display_name = None
+        try:
+            with backend.lock:
+                user = backend.user_manager.upsert_user(
+                    user_id=user_id,
+                    password=password,
+                    display_name=display_name,
+                    role=body.get("role"),
+                )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except UserStoreError as exc:
+            logger.exception("Failed to persist provisioned user")
+            raise HTTPException(status_code=500, detail="user_store_unavailable") from exc
+        logger.info("Web API v1 action: user=%s action=provision", user.user_id)
+        return _v1_success(user=user.to_payload())
+
+    @app.post("/api/v1/invitations")
+    async def api_v1_invitations(request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_USERS)
+        body = await request.json()
+        target = str((body or {}).get("target") or "").strip()
+        role = str((body or {}).get("role") or "MEMBER").strip().upper()
+        if not target:
+            raise HTTPException(status_code=400, detail="target_required")
+        invitation = {
+            "id": secrets.token_urlsafe(8),
+            "target": target,
+            "role": role,
+            "status": "pending",
+            "created_by": access.user.user_id,
+            "created_at": time.time(),
+        }
+        with backend.lock:
+            backend.invitations.insert(0, invitation)
+            del backend.invitations[30:]
+        return _v1_success(invitation=invitation)
+
+    @app.get("/api/v1/invitations")
+    async def api_v1_list_invitations(access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(access, PERMISSION_MANAGE_USERS)
+        with backend.lock:
+            invitations = list(backend.invitations)
+        return _v1_success(invitations=invitations)
+
+    @app.delete("/api/v1/invitations/{invitation_id}")
+    async def api_v1_delete_invitation(invitation_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_USERS)
+        removed = False
+        with backend.lock:
+            retained = []
+            for invitation in backend.invitations:
+                if str(invitation.get("id", "")) == invitation_id:
+                    removed = True
+                    continue
+                retained.append(invitation)
+            backend.invitations[:] = retained
+        if not removed:
+            raise HTTPException(status_code=404, detail="invitation_not_found")
+        return _v1_success(invitation_id=invitation_id)
 
     def _require_v1_write(request: Request, access: _AccessContext) -> None:
         if access.via_api_key:
@@ -1018,7 +1321,8 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/start")
     async def api_v1_start(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
-        backend._get_server_or_404(server_id)
+        _require_permission(access, PERMISSION_CONTROL_SERVERS)
+        _server_for(access, server_id)
         lock = _acquire_action_lock_or_raise(server_id)
         try:
             process = manager.processes[server_id]
@@ -1049,7 +1353,8 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/stop")
     async def api_v1_stop(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
-        backend._get_server_or_404(server_id)
+        _require_permission(access, PERMISSION_CONTROL_SERVERS)
+        _server_for(access, server_id)
         lock = _acquire_action_lock_or_raise(server_id)
         try:
             process = manager.processes[server_id]
@@ -1076,7 +1381,8 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/restart")
     async def api_v1_restart(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
-        backend._get_server_or_404(server_id)
+        _require_permission(access, PERMISSION_CONTROL_SERVERS)
+        _server_for(access, server_id)
         lock = _acquire_action_lock_or_raise(server_id)
         try:
             try:
@@ -1091,14 +1397,15 @@ def create_web_app(
     @app.post("/api/v1/servers")
     async def api_v1_create_server(request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_CREATE_SERVERS)
         payload = await request.json()
-        job = backend._create_job("create_server")
+        job = backend._create_job("create_server", owner_id=access.user.user_id)
 
         def _create_worker() -> None:
             backend._finish_job(job, "RUNNING")
             backend._append_job_progress(job, "Preparing server")
             try:
-                config = backend._create_server_from_payload(payload or {})
+                config = backend._create_server_from_payload(payload or {}, owner_id=access.user.user_id)
                 backend._append_job_progress(job, "Configuring server")
                 backend._append_job_progress(job, "Validating")
                 backend._finish_job(job, "COMPLETED", result={"server": backend._server_payload_v1(config.id)})
@@ -1111,13 +1418,66 @@ def create_web_app(
         threading.Thread(target=_create_worker, daemon=True, name=f"job-create-{job.job_id}").start()
         return _v1_success(job_id=job.job_id)
 
+    @app.delete("/api/v1/servers/{server_id}")
+    async def api_v1_delete_server(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_DELETE_SERVERS)
+        _require_server_owner(access, server_id)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if str((body or {}).get("confirm") or "") != server_id:
+            raise HTTPException(status_code=400, detail="confirmation_required")
+        lock = _acquire_action_lock_or_raise(server_id)
+        job = backend._create_job("delete_server", metadata={"server_id": server_id}, owner_id=access.user.user_id)
+
+        def _delete_worker() -> None:
+            try:
+                backend._finish_job(job, "RUNNING")
+                backend._append_job_progress(job, "Stopping server")
+                backend._append_job_progress(job, "Creating safety backup")
+                backup = backend._delete_server(server_id, on_settings_changed)
+                backend._append_job_progress(job, "Removing server")
+                backend._finish_job(job, "COMPLETED", result={"server_id": server_id, "safety_backup_id": backup["id"]})
+                logger.info("Web API v1 action: server=%s action=delete", server_id)
+            except HTTPException as exc:
+                backend._finish_job(job, "FAILED", error=str(exc.detail))
+            except Exception as exc:
+                backend._finish_job(job, "FAILED", error=str(exc))
+            finally:
+                lock.release()
+
+        threading.Thread(target=_delete_worker, daemon=True, name=f"job-delete-{job.job_id}").start()
+        return _v1_success(job_id=job.job_id)
+
     @app.get("/api/v1/jobs/{job_id}")
     async def api_v1_job(job_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
         with backend.lock:
             job = backend.jobs.get(job_id)
-        if not job:
+        if not job or not _job_visible(_access, job):
             raise HTTPException(status_code=404, detail="job_not_found")
         return _v1_success(job=backend._job_payload(job))
+
+    @app.get("/api/v1/jobs")
+    async def api_v1_jobs(_access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        return _v1_success(jobs=backend._jobs_payload(_access.user))
+
+    @app.get("/api/v1/tasks")
+    async def api_v1_tasks(_access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        return _v1_success(tasks=backend._jobs_payload(_access.user))
+
+    @app.get("/api/v1/tasks/{task_id}")
+    async def api_v1_task(task_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        with backend.lock:
+            job = backend.jobs.get(task_id)
+        if not job or not _job_visible(_access, job):
+            raise HTTPException(status_code=404, detail="task_not_found")
+        return _v1_success(task=backend._job_payload(job))
 
     @app.get("/api/servers/{server_id}/logs")
     async def api_logs(server_id: str, cursor: int = 0, limit: int = 200, _session: _Session = Depends(_require_auth)):
@@ -1137,7 +1497,8 @@ def create_web_app(
 
     @app.get("/api/v1/servers/{server_id}/logs")
     async def api_v1_logs(server_id: str, cursor: int = 0, limit: int = 200, _access: _AccessContext = Depends(_require_v1_access)):
-        _, process = backend._get_server_or_404(server_id)
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        _, process = _server_for(_access, server_id)
         all_lines = [backend._sanitize_line(line) for line in process.recent_output]
         total = len(all_lines)
         if cursor <= 0:
@@ -1153,16 +1514,22 @@ def create_web_app(
 
     @app.get("/api/v1/servers/{server_id}/players")
     async def api_v1_players(server_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        _server_for(_access, server_id)
         return _v1_success(server_id=server_id, **backend._server_players_payload(server_id))
 
     @app.get("/api/v1/servers/{server_id}/settings")
     async def api_v1_server_settings(server_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        _server_for(_access, server_id)
         payload = backend._editable_settings_payload(server_id)
         return _v1_success(server_id=server_id, **payload)
 
     @app.patch("/api/v1/servers/{server_id}/settings")
     async def api_v1_update_server_settings(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_CONTROL_SERVERS)
+        _server_for(access, server_id)
         body = await request.json()
         payload = backend._apply_editable_settings(server_id, body or {})
         if on_settings_changed:
@@ -1170,8 +1537,71 @@ def create_web_app(
         logger.info("Web API v1 action: server=%s action=update_settings", server_id)
         return _v1_success(server_id=server_id, **payload)
 
+    def _access_payload(server_id: str, config) -> dict[str, Any]:
+        return {"server_id": server_id, "owner_id": config.owner_id, "shared_with": list(config.shared_with)}
+
+    async def _access_target(request: Request) -> str:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid_body")
+        if not isinstance(body, dict) or not isinstance(body.get("user_id"), str):
+            raise HTTPException(status_code=400, detail="user_id_required")
+        target = body["user_id"].strip()
+        if not target or len(target) > 64:
+            raise HTTPException(status_code=400, detail="user_id_required")
+        return target
+
+    # Only the server owner (or global OWNER role) may administer access.
+    @app.get("/api/v1/servers/{server_id}/access")
+    async def api_v1_server_access(server_id: str, access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(access, PERMISSION_VIEW_SERVERS)
+        _require_server_owner(access, server_id)
+        config, _ = backend._get_server_or_404(server_id)
+        return _v1_success(**_access_payload(server_id, config))
+
+    @app.post("/api/v1/servers/{server_id}/access")
+    async def api_v1_grant_server_access(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_VIEW_SERVERS)
+        _require_server_owner(access, server_id)
+        target = await _access_target(request)
+        if target == access.user.user_id:
+            raise HTTPException(status_code=400, detail="cannot_grant_self")
+        target_user = backend.user_manager.get(target)
+        if target_user is None:
+            raise HTTPException(status_code=404, detail="user_not_found")
+        config, _ = backend._get_server_or_404(server_id)
+        if backend.user_manager.can_access_server(target_user, config) and target not in config.shared_with:
+            raise HTTPException(status_code=400, detail="user_already_has_access")
+        with backend.lock:
+            if target in config.shared_with:
+                raise HTTPException(status_code=409, detail="access_already_granted")
+            config.shared_with.append(target)
+        if on_settings_changed:
+            on_settings_changed()
+        logger.info("Web API v1 action: server=%s action=grant_access", server_id)
+        return _v1_success(**_access_payload(server_id, config))
+
+    @app.delete("/api/v1/servers/{server_id}/access/{user_id}")
+    async def api_v1_revoke_server_access(server_id: str, user_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
+        _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_VIEW_SERVERS)
+        _require_server_owner(access, server_id)
+        config, _ = backend._get_server_or_404(server_id)
+        target = user_id.strip()
+        with backend.lock:
+            if target not in config.shared_with:
+                raise HTTPException(status_code=404, detail="access_not_found")
+            config.shared_with[:] = [u for u in config.shared_with if u != target]
+        if on_settings_changed:
+            on_settings_changed()
+        logger.info("Web API v1 action: server=%s action=revoke_access", server_id)
+        return _v1_success(**_access_payload(server_id, config))
+
     @app.get("/api/v1/mods")
     async def api_v1_mods(game: str = "", _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
         if backend.mod_manager is None:
             return _v1_success(mods=[])
         mods = backend.mod_manager.list_mods(game=game.strip() or None)
@@ -1189,28 +1619,34 @@ def create_web_app(
 
     @app.get("/api/v1/mods/{mod_id}")
     async def api_v1_mod(mod_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
         if backend.mod_manager is None:
             raise HTTPException(status_code=404, detail="mod_not_found")
         mod = next((item for item in backend.mod_manager.list_mods() if str(item.get("id")) == mod_id), None)
         if not mod:
             raise HTTPException(status_code=404, detail="mod_not_found")
+        visible_ids = set(_visible_server_ids(_access))
         detail = {
             "id": mod.get("id"),
             "name": mod.get("name"),
             "game": mod.get("game"),
             "version": mod.get("latest_version") or "unknown",
             "status": str(mod.get("status") or "available").lower(),
-            "used_by": backend.mod_manager.servers_using_mod(mod_id),
+            "used_by": [sid for sid in backend.mod_manager.servers_using_mod(mod_id) if sid in visible_ids],
         }
         return _v1_success(mod=detail)
 
     @app.get("/api/v1/servers/{server_id}/mods")
     async def api_v1_server_mods(server_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        _server_for(_access, server_id)
         return _v1_success(server_id=server_id, mods=backend._list_server_mods(server_id))
 
     @app.post("/api/v1/servers/{server_id}/mods/{mod_id}/enable")
     async def api_v1_enable_mod(server_id: str, mod_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_MODS)
+        _server_for(access, server_id)
         if backend.mod_manager is None:
             raise HTTPException(status_code=501, detail="mods_not_configured")
         config, _ = backend._get_server_or_404(server_id)
@@ -1221,6 +1657,8 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/mods/{mod_id}/disable")
     async def api_v1_disable_mod(server_id: str, mod_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_MODS)
+        _server_for(access, server_id)
         if backend.mod_manager is None:
             raise HTTPException(status_code=501, detail="mods_not_configured")
         backend._get_server_or_404(server_id)
@@ -1231,6 +1669,8 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/mods/{mod_id}/install")
     async def api_v1_install_mod(server_id: str, mod_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_MODS)
+        _server_for(access, server_id)
         if backend.mod_manager is None:
             raise HTTPException(status_code=501, detail="mods_not_configured")
         config, _ = backend._get_server_or_404(server_id)
@@ -1241,6 +1681,8 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/mods/{mod_id}/uninstall")
     async def api_v1_uninstall_mod(server_id: str, mod_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_MODS)
+        _server_for(access, server_id)
         if backend.mod_manager is None:
             raise HTTPException(status_code=501, detail="mods_not_configured")
         config, _ = backend._get_server_or_404(server_id)
@@ -1250,6 +1692,7 @@ def create_web_app(
 
     @app.get("/api/v1/mod-profiles")
     async def api_v1_mod_profiles(game: str = "", _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
         if backend.mod_manager is None:
             return _v1_success(profiles=[])
         profiles = backend.mod_manager.list_profiles(game=game.strip() or None)
@@ -1258,6 +1701,8 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/mod-profile")
     async def api_v1_apply_mod_profile(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
+        _require_permission(access, PERMISSION_MANAGE_MODS)
+        _server_for(access, server_id)
         if backend.mod_manager is None:
             raise HTTPException(status_code=501, detail="mods_not_configured")
         body = await request.json()
@@ -1271,6 +1716,8 @@ def create_web_app(
 
     @app.get("/api/v1/servers/{server_id}/backups")
     async def api_v1_server_backups(server_id: str, _access: _AccessContext = Depends(_require_v1_access)):
+        _require_permission(_access, PERMISSION_VIEW_SERVERS)
+        _server_for(_access, server_id)
         return _v1_success(
             server_id=server_id,
             backups=backend._list_backups(server_id),
@@ -1280,7 +1727,9 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/backups")
     async def api_v1_create_backup(server_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
-        job = backend._create_job("create_backup")
+        _require_permission(access, PERMISSION_MANAGE_BACKUPS)
+        _server_for(access, server_id)
+        job = backend._create_job("create_backup", owner_id=access.user.user_id)
 
         def _backup_worker() -> None:
             backend._finish_job(job, "RUNNING")
@@ -1300,7 +1749,9 @@ def create_web_app(
     @app.post("/api/v1/servers/{server_id}/backups/{backup_id}/restore")
     async def api_v1_restore_backup(server_id: str, backup_id: str, request: Request, access: _AccessContext = Depends(_require_v1_access)):
         _require_v1_write(request, access)
-        job = backend._create_job("restore_backup")
+        _require_permission(access, PERMISSION_MANAGE_BACKUPS)
+        _server_for(access, server_id)
+        job = backend._create_job("restore_backup", owner_id=access.user.user_id)
 
         def _restore_worker() -> None:
             backend._finish_job(job, "RUNNING")

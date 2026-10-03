@@ -26,6 +26,7 @@ body {
 
 .head h1 { margin: 0; letter-spacing: 0.04em; }
 .muted { color: var(--muted); }
+.head #currentUser { margin-top: 4px; }
 
 .card {
   background: var(--panel);
@@ -79,6 +80,10 @@ button:hover { filter: brightness(1.07); }
   background: #132131;
 }
 
+.server .row + .row {
+  margin-top: 10px;
+}
+
 .status { font-weight: 700; margin: 8px 0; }
 .status.running { color: var(--ok); }
 .status.starting, .status.stopping { color: var(--warn); }
@@ -88,6 +93,14 @@ button:hover { filter: brightness(1.07); }
 .row.space { justify-content: space-between; align-items: center; }
 .row button { margin-top: 0; flex: 1 1 150px; width: auto; }
 .row.tight button { min-height: 34px; padding: 6px 10px; }
+
+#navCard .row {
+  gap: 14px;
+}
+
+#serversCard > .row.space {
+  margin-bottom: 12px;
+}
 
 button.small {
   width: auto;
@@ -118,6 +131,29 @@ button.small {
   min-height: 20px;
 }
 
+#accessHost h3 {
+  margin: 18px 0 6px;
+  font-size: 16px;
+}
+
+.access-user {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.access-user button,
+.access-grant button {
+  flex: 0 0 auto;
+  width: auto;
+  margin-top: 0;
+}
+
+.access-grant select { flex: 1 1 220px; }
+
 .backup-row {
   display: flex;
   align-items: center;
@@ -133,6 +169,66 @@ button.small {
   min-height: 34px;
   padding: 6px 10px;
   margin-top: 0;
+}
+
+.game-card {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  margin-top: 10px;
+}
+
+.game-status {
+  font-weight: 700;
+  margin-top: 6px;
+}
+
+.game-actions {
+  margin-top: 10px;
+}
+
+.game-requirements {
+  margin-top: 4px;
+}
+
+.job-row,
+.invite-row,
+.detail-row {
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.job-meta,
+.detail-meta {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.job-progress {
+  margin-top: 6px;
+  font-size: 13px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.detail-tile {
+  background: #132131;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.detail-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.detail-value {
+  font-weight: 700;
+  margin-top: 4px;
 }
 
 #logs {

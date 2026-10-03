@@ -52,6 +52,8 @@ class ServerConfig:
     max_restarts: int = 5
     restart_window_minutes: int = 15
     backup: BackupConfig = field(default_factory=BackupConfig)
+    owner_id: str = "owner-local"
+    shared_with: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ServerConfig":
@@ -84,6 +86,8 @@ class ServerConfig:
                 restart_delay=max(1, int(raw.get("restart_delay", 10))),
                 max_restarts=max(1, int(raw.get("max_restarts", 5))),
                 restart_window_minutes=max(1, int(raw.get("restart_window_minutes", 15))),
+                owner_id=str(raw.get("owner_id") or "owner-local").strip() or "owner-local",
+                shared_with=[str(u).strip() for u in (raw.get("shared_with") or []) if str(u).strip()],
                 backup=BackupConfig(
                     enabled=bool(backup_raw.get("enabled", False)),
                     source=str(backup_raw.get("source", "")),
@@ -97,6 +101,7 @@ class ServerConfig:
     def to_dict(self) -> dict[str, Any]:
         result = self.__dict__.copy()
         result["backup"] = self.backup.__dict__.copy()
+        result["shared_with"] = list(self.shared_with)
         return result
 
 

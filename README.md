@@ -29,6 +29,16 @@ If PowerShell blocks activation, run the interpreter directly:
 
 The desktop application is local-first. Network access is only used if you explicitly enable Web Control.
 
+## QA status
+
+Current runtime verification: **Ikke verificeret**. Fresh test execution could not be performed in this session because terminal access was unavailable. No new pass count is claimed.
+
+Historical verified milestones provided by the product owner:
+
+- 118 passed after Sprint 9 core
+- 127 passed after sharing grant/revoke
+- 141 passed after per-user session identity
+
 ## Web Control (Remote)
 
 Server Manager now includes an optional built-in Web Control service for simple remote operations only:

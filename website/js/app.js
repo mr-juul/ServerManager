@@ -4,11 +4,24 @@ let logServerId = "";
 let logCursor = 0;
 let createSchema = null;
 let createGameId = "";
+let createGames = [];
 let currentView = "servers";
 let selectedModsServerId = "";
 let selectedBackupsServerId = "";
 let selectedSettingsServerId = "";
 let selectedPlayersServerId = "";
+let currentUser = null;
+let jobsAutoRefreshTimer = null;
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]);
+}
 
 function formatDateTime(epochSeconds) {
   const value = Number(epochSeconds || 0);
@@ -17,6 +30,23 @@ function formatDateTime(epochSeconds) {
   }
   const date = new Date(value * 1000);
   return date.toLocaleString();
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Number(seconds || 0));
+  if (!total) {
+    return "-";
+  }
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remaining = Math.floor(total % 60);
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${remaining}s`;
+  }
+  return `${remaining}s`;
 }
 
 async function waitForJob(jobId, startedMessage, failedMessage) {
@@ -43,7 +73,19 @@ async function waitForJob(jobId, startedMessage, failedMessage) {
 
 function showMessage(text, isError = false) {
   const box = document.getElementById("message");
-  box.textContent = text;
+  const raw = String(text || "");
+  if (isError) {
+    const normalized = raw.toLowerCase();
+    if (normalized === "setup_required") {
+      box.textContent = "This game still needs setup. Open Games and run setup, then try again.";
+    } else if (normalized === "create_not_supported") {
+      box.textContent = "This game cannot be created from web yet.";
+    } else {
+      box.textContent = raw;
+    }
+  } else {
+    box.textContent = raw;
+  }
   box.classList.remove("hidden");
   box.style.borderColor = isError ? "#8a3232" : "#2f3f52";
 }
@@ -85,6 +127,32 @@ function statusText(status) {
   return map[String(status || "unknown").toLowerCase()] || String(status || "UNKNOWN").toUpperCase();
 }
 
+function gameStatusText(status) {
+  const normalized = String(status || "UNKNOWN").toUpperCase();
+  const labels = {
+    READY: "Ready",
+    SETUP_REQUIRED: "Setup required",
+    INSTALLING: "Installing",
+    ERROR: "Setup error",
+    UNSUPPORTED: "Unsupported",
+  };
+  return labels[normalized] || normalized;
+}
+
+function gameStatusClass(status) {
+  const normalized = String(status || "").toUpperCase();
+  if (normalized === "READY") {
+    return "running";
+  }
+  if (normalized === "INSTALLING") {
+    return "starting";
+  }
+  if (normalized === "SETUP_REQUIRED") {
+    return "stopping";
+  }
+  return "error";
+}
+
 async function loadServers() {
   const payload = await call("/api/servers");
   const servers = payload.servers || [];
@@ -122,10 +190,13 @@ async function loadServers() {
           <button data-action="logs" data-id="${item.id}">LOGS</button>
         </div>
         <div class="row tight">
+          <button data-action="details" data-id="${item.id}">DETAILS</button>
           <button data-action="go-players" data-id="${item.id}">PLAYERS</button>
           <button data-action="go-mods" data-id="${item.id}">MODS</button>
           <button data-action="go-backups" data-id="${item.id}">BACKUPS</button>
           <button data-action="settings" data-id="${item.id}">SETTINGS</button>
+          ${["OWNER", "ADMIN"].includes(String(currentUser?.role || "").toUpperCase()) ? `<button data-action="access" data-id="${item.id}">ACCESS</button>` : ""}
+          <button data-action="delete" data-id="${item.id}" data-name="${String(item.name || "").replace(/"/g, "&quot;")}">DELETE</button>
         </div>
       </article>
     `;
@@ -163,8 +234,301 @@ async function loadServers() {
           await openSettings(serverId);
           return;
         }
+        if (action === "details") {
+          await openServerDetails(serverId);
+          return;
+        }
+        if (action === "access") {
+          await openAccess(serverId);
+          return;
+        }
+        if (action === "delete") {
+          const name = button.dataset.name || serverId;
+          const typed = window.prompt(`Delete "${name}"? A safety backup is created first and the server is stopped if running. Type the server name to confirm:`);
+          if (typed === null) {
+            return;
+          }
+          if (typed.trim() !== name) {
+            showMessage("Name did not match. Server was not deleted.", true);
+            return;
+          }
+          const started = await call(`/api/servers/${serverId}`, { method: "DELETE", body: JSON.stringify({ confirm: serverId }) });
+          await waitForJob(started.job_id, "Deleting server...", "Delete failed. The server was not removed.");
+          showMessage("Server deleted. A safety backup was created.");
+          await loadServers();
+          return;
+        }
         await call(`/api/servers/${serverId}/${action}`, { method: "POST", body: "{}" });
         await loadServers();
+      } catch (err) {
+        showMessage(String(err.message || err), true);
+      }
+    });
+  });
+}
+
+async function openServerDetails(serverId) {
+  const payload = await call(`/api/servers/${encodeURIComponent(serverId)}`);
+  const server = payload.server || payload;
+  const host = document.getElementById("detailsHost");
+  document.getElementById("detailsTitle").textContent = `Server Details - ${serverId}`;
+  host.innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-tile">
+        <div class="detail-label">Name</div>
+        <div class="detail-value">${escapeHtml(server.name || "-")}</div>
+      </div>
+      <div class="detail-tile">
+        <div class="detail-label">Game</div>
+        <div class="detail-value">${escapeHtml(String(server.game || "").toUpperCase())}</div>
+      </div>
+      <div class="detail-tile">
+        <div class="detail-label">Status</div>
+        <div class="detail-value">${escapeHtml(statusText(server.status || server.state || "unknown"))}</div>
+      </div>
+      <div class="detail-tile">
+        <div class="detail-label">Process ID</div>
+        <div class="detail-value">${escapeHtml(server.pid || "-")}</div>
+      </div>
+      <div class="detail-tile">
+        <div class="detail-label">Uptime</div>
+        <div class="detail-value">${escapeHtml(formatDuration(server.uptime_seconds))}</div>
+      </div>
+      <div class="detail-tile">
+        <div class="detail-label">Owner</div>
+        <div class="detail-value">${escapeHtml(server.owner_id || "-")}</div>
+      </div>
+    </div>
+    <div class="row" style="margin-top: 12px;">
+      <button data-detail-action="logs" data-id="${escapeHtml(serverId)}">Open logs</button>
+      <button data-detail-action="settings" data-id="${escapeHtml(serverId)}">Open settings</button>
+    </div>
+  `;
+  host.querySelectorAll("button[data-detail-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = String(button.dataset.detailAction || "");
+      const id = String(button.dataset.id || "");
+      if (!id) {
+        return;
+      }
+      if (action === "logs") {
+        await openLogs(id);
+      } else if (action === "settings") {
+        await openSettings(id);
+      }
+    });
+  });
+  document.getElementById("detailsCard").classList.remove("hidden");
+}
+
+async function loadJobs() {
+  const payload = await call("/api/jobs");
+  const jobs = payload.jobs || [];
+  const host = document.getElementById("jobs");
+  if (!jobs.length) {
+    host.innerHTML = '<div class="muted">No jobs yet.</div>';
+    return;
+  }
+
+  host.innerHTML = jobs.map((job) => {
+    const jobId = String(job.job_id || "");
+    const status = String(job.status || "unknown").toLowerCase();
+    const operation = String(job.operation || "operation");
+    const updated = formatDateTime(job.updated_at);
+    const progress = Array.isArray(job.progress) && job.progress.length
+      ? escapeHtml(job.progress[job.progress.length - 1])
+      : "No progress details yet.";
+    return `
+      <div class="job-row">
+        <div><strong>${escapeHtml(operation)}</strong></div>
+        <div class="status ${statusClass(status)}">${escapeHtml(String(job.status || "UNKNOWN"))}</div>
+        <div class="job-meta">Job ID: ${escapeHtml(jobId)} | Updated: ${escapeHtml(updated)}</div>
+        <div class="job-progress">${progress}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function loadInvitations() {
+  const host = document.getElementById("invitations");
+  const canManageUsers = Array.isArray(currentUser?.permissions)
+    && currentUser.permissions.includes("manage_users");
+  if (!canManageUsers) {
+    host.innerHTML = '<div class="muted">You do not have permission to manage invitations.</div>';
+    return;
+  }
+
+  const payload = await call("/api/invitations");
+  const invitations = payload.invitations || [];
+  host.innerHTML = `
+    <div class="invite-row">
+      <h3>Create invitation</h3>
+      <label class="field"><span>Target</span><input id="inviteTarget" type="text" placeholder="email or username"></label>
+      <label class="field"><span>Role</span>
+        <select id="inviteRole">
+          <option value="MEMBER">Member</option>
+          <option value="ADMIN">Admin</option>
+        </select>
+      </label>
+      <button id="createInvitationBtn" class="small">Create invitation</button>
+    </div>
+    <div class="invite-row">
+      <h3>Pending invitations</h3>
+      ${(invitations.length ? invitations.map((invitation) => `
+        <div class="access-user">
+          <span>
+            ${escapeHtml(invitation.target || "-")}
+            <span class="muted">(${escapeHtml(invitation.role || "MEMBER")}, ${escapeHtml(invitation.status || "pending")})</span>
+          </span>
+          <button class="small" data-delete-invitation="${escapeHtml(invitation.id || "")}">Delete</button>
+        </div>
+      `).join("") : '<div class="muted">No pending invitations.</div>')}
+    </div>
+  `;
+
+  const createButton = document.getElementById("createInvitationBtn");
+  if (createButton) {
+    createButton.addEventListener("click", async () => {
+      const target = String(document.getElementById("inviteTarget").value || "").trim();
+      const role = String(document.getElementById("inviteRole").value || "MEMBER");
+      if (!target) {
+        showMessage("Enter a target for the invitation.", true);
+        return;
+      }
+      try {
+        await call("/api/invitations", { method: "POST", body: JSON.stringify({ target, role }) });
+        showMessage("Invitation created.");
+        await loadInvitations();
+      } catch (err) {
+        showMessage(String(err.message || err), true);
+      }
+    });
+  }
+
+  host.querySelectorAll("button[data-delete-invitation]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const invitationId = String(button.dataset.deleteInvitation || "");
+      if (!invitationId) {
+        return;
+      }
+      try {
+        await call(`/api/invitations/${encodeURIComponent(invitationId)}`, { method: "DELETE" });
+        showMessage("Invitation deleted.");
+        await loadInvitations();
+      } catch (err) {
+        showMessage(String(err.message || err), true);
+      }
+    });
+  });
+}
+
+async function openAccess(serverId) {
+  const accessCard = document.getElementById("accessCard");
+  const accessHost = document.getElementById("accessHost");
+  document.getElementById("accessTitle").textContent = `Server Access - ${serverId}`;
+  accessHost.textContent = "Loading access...";
+  accessCard.classList.remove("hidden");
+
+  const [access, usersPayload] = await Promise.all([
+    call(`/api/servers/${encodeURIComponent(serverId)}/access`),
+    call("/api/users"),
+  ]);
+  const users = usersPayload.users || [];
+  const ownerId = String(access.owner_id || "");
+  const sharedUsers = Array.isArray(access.shared_with) ? access.shared_with.map(String) : [];
+  const owner = users.find((user) => String(user.id) === ownerId);
+  const ownerName = owner ? String(owner.name || owner.id) : ownerId;
+  const availableUsers = users.filter((user) => user.active !== false
+    && String(user.id) !== ownerId
+    && !sharedUsers.includes(String(user.id)));
+  const canManageUsers = Array.isArray(currentUser?.permissions)
+    && currentUser.permissions.includes("manage_users");
+
+  accessHost.innerHTML = `
+    <p class="muted">Owner: <strong>${escapeHtml(ownerName)}</strong> (${escapeHtml(ownerId)})</p>
+    <h3>Shared with</h3>
+    <div id="sharedUsers">
+      ${sharedUsers.map((userId) => {
+        const user = users.find((item) => String(item.id) === userId);
+        const userName = user ? String(user.name || user.id) : userId;
+        return `<div class="access-user"><span>${escapeHtml(userName)} <span class="muted">(${escapeHtml(userId)})</span></span><button class="small" data-revoke-user="${escapeHtml(userId)}">Remove</button></div>`;
+      }).join("") || '<div class="muted">No users have shared access.</div>'}
+    </div>
+    <h3>Grant access</h3>
+    ${availableUsers.length ? `
+      <div class="row access-grant">
+        <select id="accessUserSelect" aria-label="User to grant access">
+          ${availableUsers.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.name || user.id)} (${escapeHtml(user.id)})</option>`).join("")}
+        </select>
+        <button id="grantAccessBtn" class="small">Grant access</button>
+      </div>
+    ` : '<div class="muted">There are no other users available to add.</div>'}
+    ${canManageUsers ? `
+      <h3>Invite a new user</h3>
+      <div class="access-invite">
+        <label class="field"><span>User ID</span><input id="inviteUserId" type="text" maxlength="64" autocomplete="username" required></label>
+        <label class="field"><span>Name (optional)</span><input id="inviteUserName" type="text" maxlength="100" autocomplete="name"></label>
+        <label class="field"><span>Temporary password</span><input id="inviteUserPassword" type="password" minlength="8" autocomplete="new-password" required></label>
+        <button id="createAndGrantBtn" class="small">Create account and grant access</button>
+        <p class="muted">Share the user ID and password with them privately.</p>
+      </div>
+    ` : ""}
+  `;
+
+  const grantButton = document.getElementById("grantAccessBtn");
+  if (grantButton) {
+    grantButton.addEventListener("click", async () => {
+      const userId = String(document.getElementById("accessUserSelect").value || "");
+      try {
+        await call(`/api/servers/${encodeURIComponent(serverId)}/access`, {
+          method: "POST",
+          body: JSON.stringify({ user_id: userId }),
+        });
+        await openAccess(serverId);
+        showMessage("Access granted.");
+      } catch (err) {
+        showMessage(String(err.message || err), true);
+      }
+    });
+  }
+
+  const createAndGrantButton = document.getElementById("createAndGrantBtn");
+  if (createAndGrantButton) {
+    createAndGrantButton.addEventListener("click", async () => {
+      const userId = String(document.getElementById("inviteUserId").value || "").trim();
+      const name = String(document.getElementById("inviteUserName").value || "").trim();
+      const password = String(document.getElementById("inviteUserPassword").value || "");
+      if (!userId || !password) {
+        showMessage("Enter a user ID and temporary password.", true);
+        return;
+      }
+      let accountCreated = false;
+      try {
+        await call("/api/users", {
+          method: "POST",
+          body: JSON.stringify({ user_id: userId, name, password }),
+        });
+        accountCreated = true;
+        await call(`/api/servers/${encodeURIComponent(serverId)}/access`, {
+          method: "POST",
+          body: JSON.stringify({ user_id: userId }),
+        });
+        await openAccess(serverId);
+        showMessage("Account created and access granted. Share the credentials privately.");
+      } catch (err) {
+        const message = String(err.message || err);
+        showMessage(accountCreated ? `Account created, but access could not be granted: ${message}` : message, true);
+      }
+    });
+  }
+
+  accessHost.querySelectorAll("button[data-revoke-user]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const userId = String(button.dataset.revokeUser || "");
+      try {
+        await call(`/api/servers/${encodeURIComponent(serverId)}/access/${encodeURIComponent(userId)}`, { method: "DELETE" });
+        await openAccess(serverId);
+        showMessage("Access removed.");
       } catch (err) {
         showMessage(String(err.message || err), true);
       }
@@ -313,6 +677,65 @@ async function loadPlayers() {
   }
 }
 
+async function loadGames() {
+  const payload = await call("/api/games");
+  const games = payload.games || [];
+  const host = document.getElementById("games");
+  if (!games.length) {
+    host.innerHTML = '<div class="muted">No games available.</div>';
+    return;
+  }
+
+  host.innerHTML = games.map((game) => {
+    const gameId = String(game.id || "");
+    const status = String(game.status || "UNKNOWN").toUpperCase();
+    const setup = game.setup || {};
+    const automaticSetup = Boolean(setup.automatic);
+    const canCreate = Boolean(game.capabilities && game.capabilities.create_server);
+    const requirements = Array.isArray(setup.requirements) ? setup.requirements.filter(Boolean) : [];
+    return `
+      <article class="game-card">
+        <div><strong>${String(game.icon || "")} ${String(game.name || game.display_name || gameId)}</strong></div>
+        <div class="muted">${gameId}</div>
+        <div class="status ${gameStatusClass(status)} game-status">${gameStatusText(status)}</div>
+        ${requirements.length ? `<div class="muted game-requirements">Requirements: ${requirements.join(", ")}</div>` : ""}
+        <div class="row game-actions">
+          ${canCreate ? `<button data-game-action="create" data-game-id="${gameId}">Create server</button>` : ""}
+          ${automaticSetup && (status === "SETUP_REQUIRED" || status === "ERROR") ? `<button data-game-action="setup" data-game-id="${gameId}">Run setup</button>` : ""}
+          ${status === "INSTALLING" ? `<button disabled>Setup in progress...</button>` : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  host.querySelectorAll("button[data-game-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = String(button.dataset.gameAction || "");
+      const gameId = String(button.dataset.gameId || "");
+      if (!action || !gameId) {
+        return;
+      }
+      try {
+        hideMessage();
+        if (action === "create") {
+          await openCreateServer(gameId);
+          return;
+        }
+        const started = await call(`/api/games/${encodeURIComponent(gameId)}/setup`, { method: "POST", body: "{}" });
+        const jobId = String(started.job_id || "");
+        if (!jobId) {
+          throw new Error("Missing job id.");
+        }
+        await waitForJob(jobId, "Running game setup...", "Game setup failed.");
+        showMessage("Game setup completed. You can now create a server if setup is ready.");
+        await loadGames();
+      } catch (err) {
+        showMessage(String(err.message || err), true);
+      }
+    });
+  });
+}
+
 async function loadBackups() {
   const serversPayload = await call("/api/servers");
   const servers = serversPayload.servers || [];
@@ -415,9 +838,12 @@ async function loadBackups() {
 function setView(view) {
   currentView = view;
   document.getElementById("serversCard").classList.toggle("hidden", view !== "servers");
+  document.getElementById("gamesCard").classList.toggle("hidden", view !== "games");
+  document.getElementById("jobsCard").classList.toggle("hidden", view !== "jobs");
   document.getElementById("playersCard").classList.toggle("hidden", view !== "players");
   document.getElementById("modsCard").classList.toggle("hidden", view !== "mods");
   document.getElementById("backupsCard").classList.toggle("hidden", view !== "backups");
+  document.getElementById("invitationsCard").classList.toggle("hidden", view !== "invitations");
 }
 
 async function refreshCurrentView() {
@@ -429,8 +855,20 @@ async function refreshCurrentView() {
     await loadMods();
     return;
   }
+  if (currentView === "games") {
+    await loadGames();
+    return;
+  }
+  if (currentView === "jobs") {
+    await loadJobs();
+    return;
+  }
   if (currentView === "players") {
     await loadPlayers();
+    return;
+  }
+  if (currentView === "invitations") {
+    await loadInvitations();
     return;
   }
   await loadBackups();
@@ -503,9 +941,27 @@ async function _renderCreateForm() {
     return;
   }
 
+  const gameOptions = createGames
+    .map((game) => {
+      const gameId = String(game.id);
+      const selected = gameId === createGameId ? " selected" : "";
+      return `<option value="${gameId}"${selected}>${String(game.icon || "")} ${String(game.display_name || gameId)}</option>`;
+    })
+    .join("");
+
+  const gameSelectorHtml = _fieldRow("Game", `<select id="createGameSelect">${gameOptions}</select>`);
+
   const schemaPayload = await call(`/api/games/${createGameId}/create-schema`);
   createSchema = schemaPayload.schema || {};
   if (!createSchema.supported) {
+    host.innerHTML = gameSelectorHtml;
+    const selector = document.getElementById("createGameSelect");
+    if (selector) {
+      selector.addEventListener("change", async (event) => {
+        createGameId = String(event.target.value || "");
+        await _renderCreateForm();
+      });
+    }
     hint.textContent = createSchema.message || "Create this server in Server Manager.";
     return;
   }
@@ -537,32 +993,33 @@ async function _renderCreateForm() {
     }
     html.push(_fieldRow(label, `<input type="text" data-field-id="${id}" />`));
   }
-  host.innerHTML = html.join("");
+  host.innerHTML = gameSelectorHtml + html.join("");
+  const selector = document.getElementById("createGameSelect");
+  if (selector) {
+    selector.addEventListener("change", async (event) => {
+      createGameId = String(event.target.value || "");
+      await _renderCreateForm();
+    });
+  }
   hint.textContent = "Only safe user choices are shown here.";
   document.getElementById("createSubmitBtn").disabled = false;
 }
 
-async function openCreateServer() {
+async function openCreateServer(initialGameId = "") {
   document.getElementById("createCard").classList.remove("hidden");
   document.getElementById("createFormHost").innerHTML = "Loading...";
   document.getElementById("createSubmitBtn").disabled = true;
 
   const gamesPayload = await call("/api/games");
-  const games = (gamesPayload.games || []).filter((g) => Boolean(g.capabilities && g.capabilities.create_server));
-  if (!games.length) {
-    document.getElementById("createFormHost").innerHTML = "No games are available for web creation yet.";
+  createGames = (gamesPayload.games || []).filter((g) => Boolean(g.capabilities && g.capabilities.create_server));
+  if (!createGames.length) {
+    document.getElementById("createFormHost").innerHTML = "No games are ready for web creation yet. Open Games and run setup where available.";
     return;
   }
 
-  createGameId = String(games[0].id);
-  const options = games
-    .map((game) => `<option value="${String(game.id)}">${String(game.icon || "")} ${String(game.display_name || game.id)}</option>`)
-    .join("");
-  document.getElementById("createFormHost").innerHTML = _fieldRow("Game", `<select id="createGameSelect">${options}</select>`);
-  document.getElementById("createGameSelect").addEventListener("change", async (event) => {
-    createGameId = String(event.target.value || "");
-    await _renderCreateForm();
-  });
+  const preferred = String(initialGameId || "");
+  const target = createGames.find((game) => String(game.id) === preferred) || createGames[0];
+  createGameId = String(target.id);
   await _renderCreateForm();
 }
 
@@ -592,6 +1049,13 @@ async function refreshLogs(initial) {
 }
 
 async function bootstrapLoggedIn() {
+  const mePayload = await call("/api/me");
+  currentUser = mePayload.user || null;
+  const identity = document.getElementById("currentUser");
+  identity.textContent = currentUser
+    ? `Signed in as ${currentUser.name || currentUser.id} (${currentUser.id})`
+    : "";
+  identity.classList.toggle("hidden", !currentUser);
   document.getElementById("loginCard").classList.add("hidden");
   document.getElementById("navCard").classList.remove("hidden");
   document.getElementById("logoutBtn").classList.remove("hidden");
@@ -601,10 +1065,12 @@ async function bootstrapLoggedIn() {
   serversTimer = setInterval(refreshCurrentView, 5000);
 }
 
-document.getElementById("loginBtn").addEventListener("click", async () => {
+document.getElementById("loginForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const userId = document.getElementById("userId").value.trim();
   const password = document.getElementById("password").value;
   try {
-    await call("/api/login", { method: "POST", body: JSON.stringify({ password }) });
+    await call("/api/login", { method: "POST", body: JSON.stringify({ user_id: userId, password }) });
     hideMessage();
     await bootstrapLoggedIn();
   } catch (err) {
@@ -620,15 +1086,31 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   }
   if (serversTimer) clearInterval(serversTimer);
   if (logTimer) clearInterval(logTimer);
+  if (jobsAutoRefreshTimer) clearInterval(jobsAutoRefreshTimer);
   document.getElementById("navCard").classList.add("hidden");
   document.getElementById("serversCard").classList.add("hidden");
+  document.getElementById("gamesCard").classList.add("hidden");
+  document.getElementById("jobsCard").classList.add("hidden");
   document.getElementById("playersCard").classList.add("hidden");
   document.getElementById("modsCard").classList.add("hidden");
   document.getElementById("backupsCard").classList.add("hidden");
+  document.getElementById("invitationsCard").classList.add("hidden");
   document.getElementById("settingsCard").classList.add("hidden");
+  document.getElementById("accessCard").classList.add("hidden");
+  document.getElementById("detailsCard").classList.add("hidden");
   document.getElementById("logsCard").classList.add("hidden");
   document.getElementById("loginCard").classList.remove("hidden");
+  document.getElementById("currentUser").classList.add("hidden");
+  currentUser = null;
   document.getElementById("logoutBtn").classList.add("hidden");
+});
+
+document.getElementById("closeAccessBtn").addEventListener("click", () => {
+  document.getElementById("accessCard").classList.add("hidden");
+});
+
+document.getElementById("closeDetailsBtn").addEventListener("click", () => {
+  document.getElementById("detailsCard").classList.add("hidden");
 });
 
 document.getElementById("closeSettingsBtn").addEventListener("click", () => {
@@ -666,6 +1148,49 @@ document.getElementById("navServersBtn").addEventListener("click", async () => {
   try {
     setView("servers");
     await refreshCurrentView();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("navGamesBtn").addEventListener("click", async () => {
+  try {
+    setView("games");
+    await refreshCurrentView();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("navJobsBtn").addEventListener("click", async () => {
+  try {
+    setView("jobs");
+    await refreshCurrentView();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("navInvitationsBtn").addEventListener("click", async () => {
+  try {
+    setView("invitations");
+    await refreshCurrentView();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("refreshJobsBtn").addEventListener("click", async () => {
+  try {
+    await loadJobs();
+  } catch (err) {
+    showMessage(String(err.message || err), true);
+  }
+});
+
+document.getElementById("refreshInvitationsBtn").addEventListener("click", async () => {
+  try {
+    await loadInvitations();
   } catch (err) {
     showMessage(String(err.message || err), true);
   }

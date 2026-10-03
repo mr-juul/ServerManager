@@ -854,44 +854,47 @@ class ServerCard(QWidget):
 
 
 class GameCard(QWidget):
-    def __init__(self, status: GameStatus, new_server_callback, setup_callback, details_callback, parent=None):
+    def __init__(self, status: GameStatus, setup_callback, parent=None):
         super().__init__(parent)
         self.status_data = status
         definition = status.definition
-        layout = QVBoxLayout(self)
-        title = QLabel(f"{definition.icon}  {definition.display_name}")
-        title.setObjectName("serverTitle")
-        layout.addWidget(title)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(10)
 
-        simple_state = status.state
-        summary = "Du kan oprette en server nu."
+        state_label = "KLAR"
+        dot_color = "#61d394"
         if status.state == "WARNING":
-            simple_state = "KRÆVER OPSÆTNING"
-            summary = "Serverfiler skal sættes op før du kan oprette servere."
+            state_label = "KRÆVER OPSÆTNING"
+            dot_color = "#e66b6b"
         elif status.state == "ERROR":
-            simple_state = "UTILGÆNGELIG"
-            summary = "Automatisk opsætning er ikke tilgængelig endnu."
-        elif status.state == "READY":
-            simple_state = "KLAR"
-        layout.addWidget(QLabel(simple_state))
-        hint = QLabel(summary)
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+            state_label = "UTILGÆNGELIG"
+            dot_color = "#e66b6b"
+        elif status.state != "READY":
+            state_label = "FEJL"
+            dot_color = "#e66b6b"
 
-        buttons = QHBoxLayout()
-        if simple_state == "KLAR":
-            create = QPushButton("NY SERVER")
-            create.clicked.connect(lambda: new_server_callback(status.definition.id))
-            buttons.addWidget(create)
-        setup = QPushButton("OPSÆT AUTOMATISK")
+        dot = QLabel("●")
+        dot.setObjectName("gameStatusDot")
+        dot.setStyleSheet(f"color:{dot_color};")
+        layout.addWidget(dot)
+
+        title = QLabel(f"{definition.icon}  {definition.display_name}")
+        title.setObjectName("gameRowTitle")
+        layout.addWidget(title, 1)
+
+        state = QLabel(state_label)
+        state.setObjectName("gameRowState")
+        layout.addWidget(state)
+
+        setup = QPushButton("⚙")
+        setup.setObjectName("gameGearButton")
+        setup.setToolTip("Opsætning og detaljer")
+        setup.setFixedSize(34, 28)
         setup.clicked.connect(lambda: setup_callback(status.definition.id))
-        setup.setEnabled(simple_state in {"KRÆVER OPSÆTNING", "KLAR"})
-        buttons.addWidget(setup)
-        details = QPushButton("DETALJER")
-        details.clicked.connect(lambda: details_callback(status.definition.id))
-        buttons.addWidget(details)
-        layout.addLayout(buttons)
-        self.setObjectName("serverCard")
+        layout.addWidget(setup)
+
+        self.setObjectName("gameRowCard")
 
 
 class MainWindow(QMainWindow):
@@ -1049,7 +1052,7 @@ class MainWindow(QMainWindow):
             label.setObjectName("gameHeading")
             self.game_layout.addWidget(label)
             for status in grouped[heading]:
-                self.game_layout.addWidget(GameCard(status, self.add_server_for_game, self.setup_game, self.show_game_details))
+                self.game_layout.addWidget(GameCard(status, self.setup_game))
         self.game_layout.addStretch()
 
     def configure_game(self, game_id):
@@ -1598,4 +1601,20 @@ class MainWindow(QMainWindow):
 
 
 def apply_theme(app):
-    app.setStyleSheet("""QWidget { background:#10161f; color:#e7edf5; font-family:Segoe UI; font-size:10pt; } #appTitle { font-size:18pt; font-weight:700; color:#8ed1c7; padding:8px; } #pageTitle { font-size:22pt; font-weight:700; color:#8ed1c7; } #gameHeading { color:#8ed1c7; font-size:13pt; font-weight:700; padding-top:14px; } #serverCard { background:#192431; border:1px solid #2b3a4c; border-radius:8px; padding:12px; margin:6px; } #serverTitle { font-size:14pt; font-weight:600; } #status { font-weight:700; color:#8ed1c7; } QPushButton { background:#26384c; border:1px solid #3b526b; border-radius:4px; padding:7px 12px; } QPushButton:hover { background:#31516b; } QPlainTextEdit { background:#0a0f15; color:#b9d7d0; border:1px solid #34485d; }""")
+    app.setStyleSheet("""
+        QWidget { background:#10161f; color:#e7edf5; font-family:Segoe UI; font-size:10pt; }
+        #appTitle { font-size:18pt; font-weight:700; color:#8ed1c7; padding:8px; }
+        #pageTitle { font-size:22pt; font-weight:700; color:#8ed1c7; }
+        #gameHeading { color:#8ed1c7; font-size:13pt; font-weight:700; padding-top:14px; }
+        #serverCard { background:#192431; border:1px solid #2b3a4c; border-radius:8px; padding:12px; margin:6px; }
+        #serverTitle { font-size:14pt; font-weight:600; }
+        #status { font-weight:700; color:#8ed1c7; }
+        #gameRowCard { background:#192431; border:1px solid #2b3a4c; border-radius:8px; margin:4px 6px; }
+        #gameRowTitle { font-size:12pt; font-weight:600; }
+        #gameRowState { color:#9ab3cd; font-size:9pt; font-weight:600; }
+        #gameStatusDot { font-size:12pt; }
+        #gameGearButton { font-size:12pt; padding:0; }
+        QPushButton { background:#26384c; border:1px solid #3b526b; border-radius:4px; padding:7px 12px; }
+        QPushButton:hover { background:#31516b; }
+        QPlainTextEdit { background:#0a0f15; color:#b9d7d0; border:1px solid #34485d; }
+    """)
