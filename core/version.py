@@ -1,2 +1,2 @@
-APP_VERSION = "1.0.18"
+APP_VERSION = "1.0.19"
 DEFAULT_RELEASE_REPO = "mr-juul/ServerManager"
