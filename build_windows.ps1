@@ -57,6 +57,8 @@ Copy-Item -Force .\config\servers.json (Join-Path $target "config\servers.json")
 Copy-Item -Force .\config\games.json (Join-Path $target "config\games.json")
 New-Item -ItemType Directory -Force -Path (Join-Path $target "site\webcontrol") | Out-Null
 Copy-Item -Force .\site\webcontrol\* (Join-Path $target "site\webcontrol")
+New-Item -ItemType Directory -Force -Path (Join-Path $target "website") | Out-Null
+Copy-Item -Recurse -Force .\website\* (Join-Path $target "website")
 New-Item -ItemType Directory -Force -Path (Join-Path $target "logs") | Out-Null
 Copy-Item -Force .\dist\ServerManagerWatchdog.exe (Join-Path $target "ServerManagerWatchdog.exe")
 Copy-Item -Force .\dist\ServerManagerUpdater.exe (Join-Path $target "ServerManagerUpdater.exe")

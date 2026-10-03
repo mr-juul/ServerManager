@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -29,7 +30,47 @@ def _build_client() -> ServerManagerClient:
 
 app = FastAPI(title="Server Manager Website Backend", docs_url=None, redoc_url=None, openapi_url=None)
 client = _build_client()
-website_root = Path(__file__).resolve().parents[1] / "website"
+
+
+def _candidate_website_roots() -> list[Path]:
+    candidates: list[Path] = []
+    env_root = str(os.environ.get("SM_WEBSITE_ROOT", "")).strip()
+    if env_root:
+        candidates.append(Path(env_root))
+
+    source_root = Path(__file__).resolve().parents[1]
+    candidates.append(source_root / "website")
+    candidates.append(Path.cwd() / "website")
+
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "website")
+        candidates.append(exe_dir / "_internal" / "website")
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            candidates.append(Path(meipass) / "website")
+
+    # Keep first occurrence order and drop duplicates.
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve(strict=False)).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _resolve_website_root() -> Path:
+    for root in _candidate_website_roots():
+        if (root / "index.html").is_file():
+            return root
+    # Fallback keeps behavior deterministic; route returns website_missing if still absent.
+    return _candidate_website_roots()[0]
+
+
+website_root = _resolve_website_root()
 sessions: dict[str, dict[str, object]] = {}
 
 if website_root.is_dir():
@@ -110,7 +151,16 @@ async def http_exception_handler(_request: Request, exc: HTTPException):
 async def index():
     index_file = website_root / "index.html"
     if not index_file.is_file():
-        return JSONResponse(status_code=500, content={"success": False, "error": "website_missing", "message": "Website files are missing."})
+        looked_in = [str(path) for path in _candidate_website_roots()]
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": "website_missing",
+                "message": "Website files are missing.",
+                "looked_in": looked_in,
+            },
+        )
     return FileResponse(index_file)
 
 
